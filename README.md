@@ -2,7 +2,7 @@
 
 > **MCP server for searching SAP Notes/KB articles using SAP Passport authentication and Playwright automation**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5-blue.svg)](https://www.typescriptlang.org/)
 
@@ -17,12 +17,18 @@ This Model Context Protocol (MCP) server provides direct access to SAP Notes and
 - 🔧 **Debug-friendly** - Comprehensive logging and troubleshooting options
 - 📋 **MCP compliant** - Works seamlessly with Cursor AI
 
+## Live Preview in Cursor
+
+![Cursor MCP Server Preview](./images/mcpsapnote.gif)
+
+
+
 ## 🚀 Quick Start
 
 ### Prerequisites
 
 - **Node.js 18+** - [Download here](https://nodejs.org/)
-- **SAP Passport Certificate** - Your organization's .pfx certificate file
+- **SAP Passport Certificate** - Your personal .pfx certificate file
 - **Cursor AI** - [Download here](https://cursor.sh/)
 
 ### Installation
@@ -45,16 +51,22 @@ This Model Context Protocol (MCP) server provides direct access to SAP Notes and
 
 ### Setup
 
-1. **Create certificate directory**
+1. **Get your SAP Passport certificate - Only possible for S-User**
+   - Go to [SAP Passport](https://support.sap.com/en/my-support/single-sign-on-passports.html)
+   - Create your certificate
+   - Download the .pfx certificate file
+
+
+2. **Create certificate directory**
    ```bash
    mkdir certs
    ```
 
-2. **Copy your SAP Passport certificate**
+3. **Copy your SAP Passport certificate**
    - Place your `.pfx` certificate file in the `certs/` directory
    - Name it `sap.pfx` (or update the path in configuration)
 
-3. **Configure environment**
+4. **Configure environment**
    ```bash
    cp .env.example .env
    ```
