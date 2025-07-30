@@ -1,0 +1,36 @@
+{
+  "name": "sap-note-search-mcp",
+  "version": "0.0.1",
+  "description": "MCP server for searching SAP Notes/KB articles using SAP Passport authentication and Playwright automation",
+  "main": "dist/mcp-server.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/mcp-server.ts",
+    "serve": "node dist/mcp-server.js",
+    "start": "npm run build && npm run serve",
+    "test:auth": "npm run build && node test/test-auth.js",
+    "test:mcp": "npm run build && node test/test-mcp-server.js",
+    "test:api": "npm run build && node test/test-sap-api.js",
+    "test": "npm run test:auth && npm run test:api && npm run test:mcp",
+    "clean": "rm -rf dist"
+  },
+  "keywords": ["sap", "notes", "mcp", "model-context-protocol", "playwright", "search", "knowledge-base"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.54.1",
+    "dotenv": "^16.4.0",
+    "ajv": "^8.16.0",
+    "pino": "^9.1.0",
+    "pino-pretty": "^11.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "typescript": "^5.5.0",
+    "tsx": "^4.16.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+} 
