@@ -58,18 +58,28 @@ This Model Context Protocol (MCP) server provides direct access to SAP Notes and
 
 
 2. **Create certificate directory**
-   ```bash
-   mkdir certs
-   ```
+   - macOS/Linux:
+     ```bash
+     mkdir certs
+     ```
+   - Windows (PowerShell):
+     ```powershell
+     New-Item -ItemType Directory -Force -Path certs | Out-Null
+     ```
 
 3. **Copy your SAP Passport certificate**
    - Place your `.pfx` certificate file in the `certs/` directory
    - Name it `sap.pfx` (or update the path in configuration)
 
 4. **Configure environment**
-   ```bash
-   cp .env.example .env
-   ```
+   - macOS/Linux:
+     ```bash
+     cp .env.example .env
+     ```
+   - Windows (PowerShell):
+     ```powershell
+     Copy-Item .env.example .env
+     ```
    
    Edit `.env` and add your certificate passphrase:
    ```env
@@ -93,7 +103,9 @@ This Model Context Protocol (MCP) server provides direct access to SAP Notes and
    }
    ```
 
-   **⚠️ Important:** Replace `/full/path/to/sap-note-search-mcp` with the actual full path to your project directory.
+   **⚠️ Important:** Replace the project path with your actual absolute path.
+   - On Windows, use a full path like `C:\\Users\\you\\mcp-sap-notes\\dist\\mcp-server.js`.
+   - On macOS/Linux, use a path like `/Users/you/mcp-sap-notes/dist/mcp-server.js`.
 
 3. **Restart Cursor** - The SAP Note tools will appear in your AI assistant
 
@@ -183,11 +195,14 @@ npx playwright install
 Enable debug mode for detailed troubleshooting:
 
 ```bash
-# Set environment variables for debugging
+# macOS/Linux
 export HEADFUL=true
 export LOG_LEVEL=debug
+npm run test:auth
 
-# Run tests with visible browser
+# Windows (PowerShell)
+$env:HEADFUL = 'true'
+$env:LOG_LEVEL = 'debug'
 npm run test:auth
 ```
 

@@ -1,6 +1,6 @@
 import { config } from 'dotenv';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { dirname, join, isAbsolute } from 'path';
 import type { 
   SapNoteSearchParams, 
   SapNoteGetParams,
@@ -74,9 +74,15 @@ class SapNoteMcpServer {
     // Resolve PFX path relative to the project root (where package.json is)
     const projectRoot = join(__dirname, '..');
     let pfxPath = process.env.PFX_PATH!;
-    
-    // If it's a relative path, make it relative to project root
-    if (!pfxPath.startsWith('/') && !pfxPath.includes(':')) {
+
+    // Expand tilde to user home on all platforms
+    if (pfxPath.startsWith('~')) {
+      const home = process.env.HOME || process.env.USERPROFILE || '';
+      pfxPath = join(home, pfxPath.slice(2));
+    }
+
+    // If it's not absolute, resolve against project root (works on win32 and posix)
+    if (!isAbsolute(pfxPath)) {
       pfxPath = join(projectRoot, pfxPath);
     }
 
@@ -431,8 +437,18 @@ class SapNoteMcpServer {
   }
 }
 
-// Start server if this file is run directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Start server if this file is run directly (ESM-safe, cross-platform)
+const isDirectRun = (() => {
+  try {
+    const thisFile = fileURLToPath(import.meta.url);
+    const invoked = process.argv[1] ? join(process.cwd(), process.argv[1]) : '';
+    return thisFile === invoked;
+  } catch {
+    return false;
+  }
+})();
+
+if (isDirectRun) {
   const server = new SapNoteMcpServer();
   
   server.start().catch((error) => {

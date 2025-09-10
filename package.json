@@ -13,7 +13,7 @@
     "test:mcp": "npm run build && node test/test-mcp-server.js",
     "test:api": "npm run build && node test/test-sap-api.js",
     "test": "npm run test:auth && npm run test:api && npm run test:mcp",
-    "clean": "rm -rf dist"
+    "clean": "rimraf dist"
   },
   "keywords": ["sap", "notes", "mcp", "model-context-protocol", "playwright", "search", "knowledge-base"],
   "author": "",
@@ -28,7 +28,8 @@
   "devDependencies": {
     "@types/node": "^22.5.0",
     "typescript": "^5.5.0",
-    "tsx": "^4.16.0"
+    "tsx": "^4.16.0",
+    "rimraf": "^6.0.0"
   },
   "engines": {
     "node": ">=18.0.0"

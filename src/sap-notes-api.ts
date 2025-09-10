@@ -226,9 +226,16 @@ export class SapNotesApiClient {
     
     logger.debug(`🌐 Making request to: ${url}`);
 
+    const osUA = (() => {
+      const platform = process.platform;
+      if (platform === 'win32') return 'Windows NT 10.0; Win64; x64';
+      if (platform === 'linux') return 'X11; Linux x86_64';
+      return 'Macintosh; Intel Mac OS X 10_15_7';
+    })();
+
     const headers: Record<string, string> = {
       'Cookie': token,
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'User-Agent': `Mozilla/5.0 (${osUA}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36`,
       'Accept': 'application/json, text/html, */*',
       'Accept-Language': 'en-US,en;q=0.9',
       'Cache-Control': 'no-cache',
@@ -405,9 +412,16 @@ export class SapNotesApiClient {
     logger.debug(`🌐 Making raw request to: ${url}`);
 
     // Use browser-like headers (no XMLHttpRequest to avoid 401)
+    const osUA2 = (() => {
+      const platform = process.platform;
+      if (platform === 'win32') return 'Windows NT 10.0; Win64; x64';
+      if (platform === 'linux') return 'X11; Linux x86_64';
+      return 'Macintosh; Intel Mac OS X 10_15_7';
+    })();
+
     const headers: Record<string, string> = {
       'Cookie': token,
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'User-Agent': `Mozilla/5.0 (${osUA2}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36`,
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
       'Accept-Language': 'en-US,en;q=0.9',
       'Accept-Encoding': 'gzip, deflate, br',
