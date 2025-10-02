@@ -234,6 +234,8 @@ sap-note-search-mcp/
 |----------|----------|---------|-------------|
 | `PFX_PATH` | ✅ | - | Path to SAP Passport certificate (.pfx) |
 | `PFX_PASSPHRASE` | ✅ | - | Certificate passphrase |
+| `ACCESS_TOKEN` | ❌ | - | Bearer token for HTTP server authentication |
+| `HTTP_PORT` | ❌ | `3002` | HTTP server port |
 | `MAX_JWT_AGE_H` | ❌ | `12` | Token cache lifetime (hours) |
 | `HEADFUL` | ❌ | `false` | Browser visibility (for debugging) |
 | `LOG_LEVEL` | ❌ | `info` | Logging level (debug, info, warn, error) |
@@ -252,6 +254,41 @@ npx playwright install chromium
 - **Token Caching**: Authentication tokens are cached locally and expire automatically
 - **No Data Storage**: SAP Note content is retrieved on-demand, not stored
 - **Secure Communication**: All SAP API calls use HTTPS with certificate authentication
+- **Bearer Token Auth**: HTTP server supports optional bearer token authentication for securing the MCP endpoint
+
+### HTTP Server Authentication
+
+The HTTP MCP server supports simple bearer token authentication. To enable it:
+
+1. **Set the ACCESS_TOKEN environment variable** in your `.env` file:
+   ```env
+   ACCESS_TOKEN=your-secret-token-here
+   ```
+
+2. **Clients must include the Authorization header** in all requests:
+   ```bash
+   curl -X POST http://localhost:3002/mcp \
+     -H "Authorization: Bearer your-secret-token-here" \
+     -H "Content-Type: application/json" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+   ```
+
+3. **Generate a secure token** (recommended):
+   ```bash
+   # macOS/Linux
+   openssl rand -base64 32
+   
+   # Node.js
+   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+   ```
+
+4. **Without ACCESS_TOKEN**: If `ACCESS_TOKEN` is not set, the server runs without authentication (not recommended for production or public deployments).
+
+**Authentication behavior:**
+- ✅ Valid token → Request processed
+- ❌ Missing token → HTTP 401 Unauthorized
+- ❌ Invalid token → HTTP 401 Unauthorized
+- ⚠️ No ACCESS_TOKEN set → Warning logged, authentication disabled
 
 ## 📋 Available Tools
 
