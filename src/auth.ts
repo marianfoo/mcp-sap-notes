@@ -243,24 +243,24 @@ export class SapAuthenticator {
       // Add event listeners for debugging
       this.page.on('request', request => {
         if (request.url().includes('sap.com')) {
-          logger.warn('📤 Request:', request.method(), request.url().substring(0, 100));
+          logger.warn(`📤 Request: ${request.method()} ${request.url().substring(0, 100)}`);
         }
       });
       
       this.page.on('response', response => {
         if (response.url().includes('sap.com')) {
-          logger.warn('📥 Response:', response.status(), response.url().substring(0, 100));
+          logger.warn(`📥 Response: ${response.status()} ${response.url().substring(0, 100)}`);
         }
       });
       
       this.page.on('dialog', dialog => {
-        logger.warn('💬 Dialog appeared:', dialog.type(), dialog.message());
+        logger.warn(`💬 Dialog appeared: ${dialog.type()} ${dialog.message()}`);
         dialog.dismiss().catch(() => {}); // Dismiss any dialogs
       });
       
       this.page.on('console', msg => {
         if (msg.type() === 'error') {
-          logger.warn('🔴 Browser error:', msg.text());
+          logger.warn(`🔴 Browser error: ${msg.text()}`);
         }
       });
 

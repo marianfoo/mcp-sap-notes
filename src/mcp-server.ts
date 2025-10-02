@@ -316,6 +316,8 @@ class SapNoteMcpServer {
     }
 
     const searchParams = args as SapNoteSearchParams;
+    logger.info(`🔎 [handleSapNoteSearch] Starting search for query: "${searchParams.q}"`);
+    
     const searchResponse = await this.sapNotesClient.searchNotes(searchParams.q, token, 10);
 
     // Format results for MCP
@@ -330,6 +332,9 @@ class SapNoteMcpServer {
       resultText += `Language: ${note.language}\n`;
       resultText += `URL: ${note.url}\n\n`;
     }
+
+    logger.debug(`📤 [handleSapNoteSearch] Return message preview:\n${resultText.substring(0, 300)}...`);
+    logger.info(`✅ [handleSapNoteSearch] Successfully completed search, returning ${searchResponse.totalResults} results`);
 
     return {
       content: [{

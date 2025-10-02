@@ -10,7 +10,7 @@
     "dev:http": "tsx watch src/http-mcp-server.ts",
     "serve": "node dist/mcp-server.js",
     "serve:http": "AUTO_START=true node dist/http-mcp-server.js",
-    "serve:http:debug": "HTTP_PORT=3123 AUTO_START=true DEBUG_START=true node dist/http-mcp-server.js",
+    "serve:http:debug": "LOG_LEVEL=debug HTTP_PORT=3123 AUTO_START=true DEBUG_START=true node dist/http-mcp-server.js",
     "start": "npm run build && npm run serve",
     "start:http": "npm run build && npm run serve:http",
     "start:http:debug": "npm run build && npm run serve:http:debug",

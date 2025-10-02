@@ -32,49 +32,72 @@ export interface SapNoteDetail {
 }
 
 /**
- * SAP Notes API Client - Direct access to SAP Launchpad APIs
- * Replaces Coveo with native SAP Note search
+ * SAP Notes API Client - Uses Coveo Search API
+ * SAP uses Coveo as their search infrastructure for SAP Notes
  */
 export class SapNotesApiClient {
   private config: ServerConfig;
   private baseUrl = 'https://launchpad.support.sap.com';
   private rawNotesUrl = 'https://me.sap.com/backend/raw/sapnotes';
+  private coveoSearchUrl = 'https://sapamericaproductiontyfzmfz0.org.coveo.com/rest/search/v2';
+  private coveoOrgId = 'sapamericaproductiontyfzmfz0';
 
   constructor(config: ServerConfig) {
     this.config = config;
   }
 
   /**
-   * Search for SAP Notes using the SAP OData API
+   * Search for SAP Notes using the Coveo Search API
    */
   async searchNotes(query: string, token: string, maxResults: number = 10): Promise<SapNoteSearchResponse> {
     logger.info(`🔍 Searching SAP Notes for: "${query}"`);
+    logger.debug(`📊 Search parameters: query="${query}", maxResults=${maxResults}`);
 
     try {
-      // Try different search approaches
-      const searchMethods = [
-        () => this.searchByNoteNumber(query, token),
-        () => this.searchByKeyword(query, token, maxResults),
-        () => this.searchGeneral(query, token, maxResults)
-      ];
+      // Get Coveo bearer token from SAP authentication
+      const coveoToken = await this.getCoveoToken(token);
+      
+      // Build Coveo search request
+      const searchUrl = `${this.coveoSearchUrl}?organizationId=${this.coveoOrgId}`;
+      logger.debug(`🌐 Coveo Search URL: ${searchUrl}`);
 
-      for (const searchMethod of searchMethods) {
-        try {
-          const result = await searchMethod();
-          if (result.results.length > 0) {
-            logger.info(`✅ Found ${result.results.length} results using ${searchMethod.name}`);
-            return result;
-          }
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          logger.warn(`⚠️ Search method ${searchMethod.name} failed: ${errorMessage}`);
-        }
+      const searchBody = this.buildCoveoSearchBody(query, maxResults);
+      logger.debug(`📤 Coveo Search Body: ${JSON.stringify(searchBody, null, 2).substring(0, 500)}...`);
+
+      const response = await fetch(searchUrl, {
+        method: 'POST',
+        headers: {
+          'accept': '*/*',
+          'accept-language': 'en-US,en;q=0.9',
+          'authorization': `Bearer ${coveoToken}`,
+          'content-type': 'application/json',
+          'cookie': token,
+          'referer': 'https://me.sap.com/',
+          'origin': 'https://me.sap.com'
+        },
+        body: JSON.stringify(searchBody)
+      });
+
+      logger.debug(`📊 Coveo Response: ${response.status} ${response.statusText}`);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        logger.error(`❌ Coveo API error: ${errorText.substring(0, 200)}`);
+        throw new Error(`Coveo API returned ${response.status}: ${errorText.substring(0, 100)}`);
       }
 
-      // If no results found, return empty response
+      const data = await response.json();
+      logger.debug(`📄 Coveo Results: ${data.totalCount || 0} results found`);
+
+      // Parse Coveo response to our format
+      const results = this.parseCoveoResponse(data);
+      
+      logger.info(`✅ Found ${results.length} SAP Note(s) via Coveo`);
+      logger.debug(`📄 Search results: ${JSON.stringify(results.map(r => ({ id: r.id, title: r.title })), null, 2)}`);
+
       return {
-        results: [],
-        totalResults: 0,
+        results,
+        totalResults: data.totalCount || results.length,
         query
       };
 
@@ -166,56 +189,288 @@ export class SapNotesApiClient {
   }
 
   /**
-   * Search by specific note number (e.g., "2744792")
+   * Get Coveo bearer token from SAP authentication
+   * The token is dynamically generated and embedded in the SAP search page
    */
-  private async searchByNoteNumber(query: string, token: string): Promise<SapNoteSearchResponse> {
-    // Check if query looks like a note number
-    const noteNumberMatch = query.match(/\b(\d{6,8})\b/);
-    if (!noteNumberMatch) {
-      throw new Error('Not a note number');
-    }
-
-    const noteNumber = noteNumberMatch[1];
+  private async getCoveoToken(sapToken: string): Promise<string> {
+    logger.debug('🔑 Fetching Coveo bearer token from SAP session using Playwright');
     
-    // Try the raw notes API first (better endpoint)
+    let browser: Browser | null = null;
+    let page: Page | null = null;
+
     try {
-      const rawResponse = await this.makeRawRequest(`/Detail?q=${noteNumber}&t=E&isVTEnabled=false`, token);
-      if (rawResponse.ok) {
-        const result = await this.parseRawNoteResponse(rawResponse, noteNumber, query);
-        if (result.results.length > 0) {
-          return result;
+      // Launch browser with cookies
+      logger.debug('🎭 Launching browser to extract Coveo token');
+      
+      browser = await chromium.launch({
+        headless: !this.config.headful,
+        args: ['--disable-dev-shm-usage', '--no-sandbox']
+      });
+
+      const context = await browser.newContext({
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+      });
+
+      // Add cookies from cached authentication
+      const cookies = await this.getCachedCookies();
+      if (cookies.length > 0) {
+        await context.addCookies(cookies);
+        logger.debug(`🍪 Added ${cookies.length} cached cookies to browser context`);
+      } else {
+        // Fallback to parsing token string
+        const parsedCookies = this.parseCookiesFromToken(sapToken);
+        if (parsedCookies.length > 0) {
+          await context.addCookies(parsedCookies);
+          logger.debug(`🍪 Added ${parsedCookies.length} parsed cookies to browser context`);
         }
       }
+
+      page = await context.newPage();
+      
+      // Set up response listener to detect redirects to login pages
+      let wasRedirectedToLogin = false;
+      page.on('response', (response) => {
+        const url = response.url();
+        if (url.includes('authentication.') || url.includes('saml/login') || url.includes('accounts.sap.com/saml2/idp/sso')) {
+          wasRedirectedToLogin = true;
+          logger.warn(`⚠️ Detected redirect to authentication page: ${url.substring(0, 80)}...`);
+        }
+      });
+
+      // Intercept network requests to capture the Coveo token
+      let coveoToken: string | null = null;
+      
+      page.on('request', (request) => {
+        const authHeader = request.headers()['authorization'];
+        if (authHeader && request.url().includes('coveo.com')) {
+          logger.debug(`📡 Coveo request: ${request.url().substring(0, 80)}`);
+          logger.debug(`🔑 Auth header: ${authHeader.substring(0, 50)}...`);
+          if (authHeader.startsWith('Bearer ')) {
+            coveoToken = authHeader.replace('Bearer ', '');
+            logger.debug(`🎯 CAPTURED Coveo token (length: ${coveoToken.length})`);
+          }
+        }
+      });
+
+      // First, go to the home page to ensure we're fully authenticated
+      logger.debug(`🌐 Navigating to SAP home page first...`);
+      let response = await page.goto('https://me.sap.com/home', {
+        waitUntil: 'domcontentloaded',  // Less strict than networkidle
+        timeout: 60000  // Increase timeout to 60s
+      });
+
+      logger.debug(`📊 Home page loaded: ${response?.status()} - ${page.url().substring(0, 100)}...`);
+
+      // Check if we were redirected to login page
+      if (wasRedirectedToLogin || page.url().includes('authentication.') || page.url().includes('saml/login')) {
+        logger.error('❌ Session expired or cookies invalid - redirected to login page');
+        logger.error('💡 Please run fresh authentication to update cached cookies');
+        throw new Error('Session expired - authentication required. Run test:auth to refresh credentials.');
+      }
+
+      // Wait for any initialization
+      await page.waitForTimeout(2000);
+      
+      // Now navigate to knowledge search page with a query to trigger Coveo API
+      const searchParams = JSON.stringify({
+        q: 'test',
+        tab: 'Support',
+        f: {
+          documenttype: ['SAP Note']
+        }
+      });
+      const searchPageUrl = `https://me.sap.com/knowledge/search/${encodeURIComponent(searchParams)}`;
+      logger.debug(`🌐 Now navigating to knowledge search: ${searchPageUrl.substring(0, 100)}...`);
+
+      response = await page.goto(searchPageUrl, {
+        waitUntil: 'domcontentloaded',  // Less strict than networkidle  
+        timeout: 60000  // Increase timeout to 60s
+      });
+
+      logger.debug(`📊 Search page loaded: ${response?.status()} - ${page.url().substring(0, 100)}...`);
+
+      // Wait for Coveo API call to complete
+      await page.waitForTimeout(3000);
+      logger.debug(`🔍 Coveo token captured from network: ${coveoToken ? 'YES' : 'NO'}`);
+
+      // Try to extract token from page JavaScript context
+      if (!coveoToken) {
+        logger.debug('🔍 Attempting to extract Coveo token from page JavaScript');
+        
+        const tokenData = await page.evaluate(() => {
+          // Look for Coveo token in window object
+          const win = window as any;
+          const findings: any = {
+            token: null,
+            foundIn: null,
+            windowKeys: Object.keys(win).filter(k => k.toLowerCase().includes('cove')).slice(0, 5)
+          };
+          
+          // Common places where Coveo token might be stored
+          if (win.coveoToken) {
+            findings.token = win.coveoToken;
+            findings.foundIn = 'window.coveoToken';
+            return findings;
+          }
+          if (win.Coveo?.SearchEndpoint?.options?.accessToken) {
+            findings.token = win.Coveo.SearchEndpoint.options.accessToken;
+            findings.foundIn = 'window.Coveo.SearchEndpoint.options.accessToken';
+            return findings;
+          }
+          if (win.__COVEO_TOKEN__) {
+            findings.token = win.__COVEO_TOKEN__;
+            findings.foundIn = 'window.__COVEO_TOKEN__';
+            return findings;
+          }
+          
+          // Try to find in localStorage
+          try {
+            const token = localStorage.getItem('coveo_token') || localStorage.getItem('coveoToken');
+            if (token) {
+              findings.token = token;
+              findings.foundIn = 'localStorage';
+              return findings;
+            }
+          } catch (e) {}
+          
+          // Try to find in sessionStorage
+          try {
+            const token = sessionStorage.getItem('coveo_token') || sessionStorage.getItem('coveoToken');
+            if (token) {
+              findings.token = token;
+              findings.foundIn = 'sessionStorage';
+              return findings;
+            }
+          } catch (e) {}
+          
+          return findings;
+        });
+
+        if (tokenData.token) {
+          coveoToken = tokenData.token;
+          logger.debug(`✅ Found Coveo token in: ${tokenData.foundIn}`);
+        } else {
+          logger.debug(`⚠️ Coveo token not found. Window keys with 'cove': ${tokenData.windowKeys.join(', ')}`);
+        }
+      }
+
+      if (coveoToken) {
+        logger.debug(`✅ Successfully extracted Coveo token (length: ${coveoToken.length})`);
+        return coveoToken;
+      }
+
+      throw new Error('Unable to extract Coveo token from SAP search page');
+      
     } catch (error) {
-      logger.debug('Raw notes API search failed, trying OData fallback');
+      logger.error('❌ Failed to get Coveo token:', error);
+      throw new Error(`Failed to get Coveo bearer token: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      // Cleanup
+      if (page) {
+        await page.close().catch(() => {});
+      }
+      if (browser) {
+        await browser.close().catch(() => {});
+      }
     }
-    
-    // Fallback to OData endpoint
-    const endpoint = `/services/odata/svt/snogwscorr/KnowledgeBaseEntries?$filter=SapNote eq '${noteNumber}'&$format=json`;
-    const response = await this.makeRequest(endpoint, token);
-    return this.parseSearchResponse(response, query);
   }
 
   /**
-   * Search by keyword in title/content
+   * Build Coveo search request body
    */
-  private async searchByKeyword(query: string, token: string, maxResults: number): Promise<SapNoteSearchResponse> {
-    const encodedQuery = encodeURIComponent(query);
-    const endpoint = `/services/odata/svt/snogwscorr/KnowledgeBaseEntries?$filter=substringof('${encodedQuery}',Title) or substringof('${encodedQuery}',Summary)&$top=${maxResults}&$format=json`;
-    
-    const response = await this.makeRequest(endpoint, token);
-    return this.parseSearchResponse(response, query);
+  private buildCoveoSearchBody(query: string, maxResults: number): any {
+    return {
+      locale: 'en-US',
+      debug: false,
+      tab: 'All',
+      referrer: 'SAP for Me search interface',
+      timezone: 'Europe/Berlin',
+      q: query,
+      enableQuerySyntax: false,
+      searchHub: 'SAP for Me',
+      sortCriteria: 'relevancy',
+      numberOfResults: maxResults,
+      firstResult: 0,
+      fieldsToInclude: [
+        'author', 'language', 'urihash', 'objecttype', 'collection', 'source',
+        'permanentid', 'documenttype', 'date', 'mh_description', 'mh_id',
+        'mh_product', 'mh_app_component', 'mh_alt_url', 'mh_category',
+        'mh_revisions', 'mh_other_components', 'mh_all_hierarchical_component',
+        'file_type', 'mh_priority'
+      ],
+      facets: [
+        {
+          field: 'documenttype',
+          type: 'specific',
+          currentValues: [
+            { value: 'SAP Note', state: 'selected' }
+          ],
+          numberOfValues: 10
+        }
+      ],
+      queryCorrection: {
+        enabled: true,
+        options: {
+          automaticallyCorrect: 'never'
+        }
+      },
+      enableDidYouMean: false
+    };
   }
 
   /**
-   * General search across multiple fields
+   * Parse Coveo search response to our SAP Note format
    */
-  private async searchGeneral(query: string, token: string, maxResults: number): Promise<SapNoteSearchResponse> {
-    const encodedQuery = encodeURIComponent(query);
-    const endpoint = `/services/odata/svt/snogwscorr/KnowledgeBaseEntries?$filter=substringof('${encodedQuery}',SapNote) or substringof('${encodedQuery}',Title)&$top=${maxResults}&$format=json`;
-    
-    const response = await this.makeRequest(endpoint, token);
-    return this.parseSearchResponse(response, query);
+  private parseCoveoResponse(data: any): SapNoteResult[] {
+    const results: SapNoteResult[] = [];
+
+    if (!data.results || !Array.isArray(data.results)) {
+      logger.warn('⚠️ No results array in Coveo response');
+      return results;
+    }
+
+    logger.debug(`📄 Parsing ${data.results.length} Coveo results...`);
+
+    for (const item of data.results) {
+      try {
+        // Extract note ID from raw.mh_id (primary) or fallback to parsing
+        const noteId = item.raw?.mh_id || 
+                      item.raw?.permanentid?.match(/\d{6,8}/)?.[0] || 
+                      item.title?.match(/\d{6,8}/)?.[0] ||
+                      'unknown';
+
+        // Extract language (Coveo returns array like ["English"])
+        const languageArray = item.raw?.language || item.raw?.syslanguage || [];
+        const language = Array.isArray(languageArray) ? languageArray[0] : (languageArray || 'EN');
+        
+        // Extract component (Coveo returns array, take first element)
+        const componentArray = item.raw?.mh_app_component || item.raw?.mh_all_hierarchical_component || [];
+        const component = Array.isArray(componentArray) ? componentArray[0] : componentArray;
+
+        // Format release date from timestamp (milliseconds)
+        const releaseDate = item.raw?.date ? 
+          new Date(item.raw.date).toISOString().split('T')[0] : 
+          'Unknown';
+
+        const result: SapNoteResult = {
+          id: noteId,
+          title: item.title || 'Unknown Title',
+          summary: item.excerpt || item.raw?.mh_description || 'No summary available',
+          language: language,
+          releaseDate: releaseDate,
+          component: component,
+          url: item.raw?.mh_alt_url || item.clickUri || `https://launchpad.support.sap.com/#/notes/${noteId}`
+        };
+
+        logger.debug(`  ✓ Parsed note ${noteId}: ${item.title?.substring(0, 60)}...`);
+        results.push(result);
+      } catch (err) {
+        logger.warn(`⚠️ Failed to parse Coveo result item: ${err}`);
+      }
+    }
+
+    logger.debug(`✅ Successfully parsed ${results.length} SAP Notes from Coveo response`);
+    return results;
   }
 
   /**
@@ -258,49 +513,6 @@ export class SapNotesApiClient {
     return response;
   }
 
-  /**
-   * Parse search response from SAP OData API
-   */
-  private async parseSearchResponse(response: Response, query: string): Promise<SapNoteSearchResponse> {
-    const responseText = await response.text();
-    
-    // Try to parse as JSON first
-    try {
-      const jsonData = JSON.parse(responseText);
-      
-      if (jsonData.d && jsonData.d.results) {
-        // OData format
-        const results = jsonData.d.results.map((item: any) => this.mapToSapNoteResult(item));
-        return {
-          results,
-          totalResults: results.length,
-          query
-        };
-      }
-      
-      if (jsonData.results) {
-        // Direct results format
-        const results = jsonData.results.map((item: any) => this.mapToSapNoteResult(item));
-        return {
-          results,
-          totalResults: results.length,
-          query
-        };
-      }
-    } catch (jsonError) {
-      // Not JSON, try to parse HTML
-      logger.debug('Response is not JSON, attempting HTML parsing');
-    }
-
-    // If we get HTML, try to extract note information
-    const htmlResults = this.parseHtmlForNotes(responseText, query);
-    
-    return {
-      results: htmlResults,
-      totalResults: htmlResults.length,
-      query
-    };
-  }
 
   /**
    * Parse note detail response
@@ -324,20 +536,6 @@ export class SapNotesApiClient {
     return this.parseHtmlForNoteDetail(responseText, noteId);
   }
 
-  /**
-   * Map OData result to our SapNoteResult format
-   */
-  private mapToSapNoteResult(item: any): SapNoteResult {
-    return {
-      id: item.SapNote || item.Id || item.id || 'unknown',
-      title: item.Title || item.title || 'Unknown Title',
-      summary: item.Summary || item.summary || item.Description || 'No summary available',
-      language: item.Language || item.language || 'EN',
-      releaseDate: item.ReleaseDate || item.releaseDate || item.CreationDate || 'Unknown',
-      component: item.Component || item.component,
-      url: `https://launchpad.support.sap.com/#/notes/${item.SapNote || item.Id || item.id}`
-    };
-  }
 
   /**
    * Map OData result to our SapNoteDetail format
@@ -357,32 +555,6 @@ export class SapNotesApiClient {
     };
   }
 
-  /**
-   * Parse HTML response to extract SAP Note information
-   */
-  private parseHtmlForNotes(html: string, query: string): SapNoteResult[] {
-    const results: SapNoteResult[] = [];
-    
-    // Look for note numbers in HTML
-    const notePattern = /\b(\d{6,8})\b/g;
-    const matches = html.match(notePattern);
-    
-    if (matches) {
-      const uniqueNotes = [...new Set(matches)];
-      for (const noteId of uniqueNotes.slice(0, 5)) { // Limit to 5 results
-        results.push({
-          id: noteId,
-          title: `SAP Note ${noteId}`,
-          summary: `Found via search for: ${query}`,
-          language: 'EN',
-          releaseDate: 'Unknown',
-          url: `https://launchpad.support.sap.com/#/notes/${noteId}`
-        });
-      }
-    }
-    
-    return results;
-  }
 
   /**
    * Parse HTML response to extract note details
@@ -451,68 +623,6 @@ export class SapNotesApiClient {
     return response;
   }
 
-  /**
-   * Parse raw note response for search results
-   */
-  private async parseRawNoteResponse(response: Response, noteId: string, query: string): Promise<SapNoteSearchResponse> {
-    const responseText = await response.text();
-    
-    try {
-      const jsonData = JSON.parse(responseText);
-      
-      // Check if we have a valid note response
-      if (jsonData && (jsonData.SapNote || jsonData.id || jsonData.noteId)) {
-        const noteResult: SapNoteResult = {
-          id: jsonData.SapNote || jsonData.id || jsonData.noteId || noteId,
-          title: jsonData.Title || jsonData.title || jsonData.ShortText || `SAP Note ${noteId}`,
-          summary: jsonData.Summary || jsonData.summary || jsonData.Abstract || jsonData.abstract || 'SAP Note details',
-          language: jsonData.Language || jsonData.language || 'EN',
-          releaseDate: jsonData.ReleaseDate || jsonData.releaseDate || jsonData.CreationDate || 'Unknown',
-          component: jsonData.Component || jsonData.component,
-          url: `https://launchpad.support.sap.com/#/notes/${noteId}`
-        };
-
-        return {
-          results: [noteResult],
-          totalResults: 1,
-          query
-        };
-      }
-    } catch (jsonError) {
-      logger.debug('Raw response is not JSON, checking for HTML redirect/content');
-    }
-
-    // Check if this is a redirect page that might lead to note content
-    if (responseText.includes('fragmentAfterLogin') || responseText.includes('document.cookie')) {
-      logger.debug('Detected redirect page, creating result based on requested note');
-      
-      // If we successfully got a response for a specific note ID, assume it exists
-      if (noteId && noteId.match(/^\d{6,8}$/)) {
-        const noteResult: SapNoteResult = {
-          id: noteId,
-          title: `SAP Note ${noteId}`,
-          summary: 'Note found via raw API (content requires additional navigation)',
-          language: 'EN',
-          releaseDate: 'Unknown',
-          url: `https://launchpad.support.sap.com/#/notes/${noteId}`
-        };
-
-        return {
-          results: [noteResult],
-          totalResults: 1,
-          query
-        };
-      }
-    }
-
-    // Fallback to HTML parsing
-    const htmlResults = this.parseHtmlForNotes(responseText, query);
-    return {
-      results: htmlResults,
-      totalResults: htmlResults.length,
-      query
-    };
-  }
 
   /**
    * Parse raw note response for detailed note information

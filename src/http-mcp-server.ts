@@ -143,8 +143,9 @@ class HttpSapNoteMcpServer {
   private authMiddleware = (req: Request, res: Response, next: Function): void => {
     const accessToken = process.env.ACCESS_TOKEN;
     
-    // If no token is configured, allow all requests
-    if (!accessToken) {
+    // If no token is configured or it's empty, allow all requests
+    if (!accessToken || accessToken.trim() === '') {
+      logger.debug('🔓 No ACCESS_TOKEN configured - allowing request without authentication');
       return next();
     }
 
@@ -488,6 +489,8 @@ class HttpSapNoteMcpServer {
     }
 
     const searchParams = args as SapNoteSearchParams;
+    logger.info(`🔎 [handleSapNoteSearch] Starting search for query: "${searchParams.q}"`);
+    
     const searchResponse = await this.sapNotesClient.searchNotes(searchParams.q, token, 10);
 
     // Format results for MCP
@@ -502,6 +505,9 @@ class HttpSapNoteMcpServer {
       resultText += `Language: ${note.language}\n`;
       resultText += `URL: ${note.url}\n\n`;
     }
+
+    logger.debug(`📤 [handleSapNoteSearch] Return message preview:\n${resultText.substring(0, 300)}...`);
+    logger.info(`✅ [handleSapNoteSearch] Successfully completed search, returning ${searchResponse.totalResults} results`);
 
     return {
       content: [{

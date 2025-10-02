@@ -27,8 +27,22 @@ const createMcpLogger = () => {
       const message = obj ? `${msg} ${JSON.stringify(obj)}` : msg;
       process.stderr.write(`[${timestamp}] ERROR: ${message}\n`);
     },
-    info: () => {}, // No-op in MCP mode
-    debug: () => {} // No-op in MCP mode
+    info: (msg: string, obj?: any) => {
+      // Enable info logs if LOG_LEVEL is debug
+      if (logLevel === 'debug' || logLevel === 'info') {
+        const timestamp = new Date().toISOString().substring(11, 19);
+        const message = obj ? `${msg} ${JSON.stringify(obj)}` : msg;
+        process.stderr.write(`[${timestamp}] INFO: ${message}\n`);
+      }
+    },
+    debug: (msg: string, obj?: any) => {
+      // Enable debug logs if LOG_LEVEL is debug
+      if (logLevel === 'debug') {
+        const timestamp = new Date().toISOString().substring(11, 19);
+        const message = obj ? `${msg} ${JSON.stringify(obj)}` : msg;
+        process.stderr.write(`[${timestamp}] DEBUG: ${message}\n`);
+      }
+    }
   };
 };
 
