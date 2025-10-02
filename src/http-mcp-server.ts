@@ -249,7 +249,7 @@ class HttpSapNoteMcpServer {
    * Start the HTTP server
    */
   async start(): Promise<void> {
-    const port = process.env.HTTP_PORT || 3002;
+    const port = process.env.HTTP_PORT || 3123;
     
     logger.warn('🚀 Starting HTTP SAP Note MCP Server');
     logger.warn(`📡 Server will be available at: http://localhost:${port}/mcp`);
@@ -440,43 +440,93 @@ class HttpSapNoteMcpServer {
     }
 
     let result: any;
+    let retryCount = 0;
+    const maxRetries = 1; // Retry once on session expiry
 
-    try {
-      switch (toolName) {
-        case 'sap_note_search':
-          result = await this.handleSapNoteSearch(toolArgs, token);
-          break;
-        case 'sap_note_get':
-          result = await this.handleSapNoteGet(toolArgs, token);
-          break;
-        default:
-          return {
-            jsonrpc: '2.0',
-            id: message.id,
-            error: {
-              code: -32601,
-              message: `Unknown tool: ${toolName}`
-            }
-          };
-      }
-
-      return {
-        jsonrpc: '2.0',
-        id: message.id,
-        result
-      };
-
-    } catch (error) {
-      logger.error('Tool call failed:', error);
-      return {
-        jsonrpc: '2.0',
-        id: message.id,
-        error: {
-          code: -32603,
-          message: `Tool execution failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+    while (retryCount <= maxRetries) {
+      try {
+        switch (toolName) {
+          case 'sap_note_search':
+            result = await this.handleSapNoteSearch(toolArgs, token);
+            break;
+          case 'sap_note_get':
+            result = await this.handleSapNoteGet(toolArgs, token);
+            break;
+          default:
+            return {
+              jsonrpc: '2.0',
+              id: message.id,
+              error: {
+                code: -32601,
+                message: `Unknown tool: ${toolName}`
+              }
+            };
         }
-      };
+
+        return {
+          jsonrpc: '2.0',
+          id: message.id,
+          result
+        };
+
+      } catch (error) {
+        // Check if this is a session expiry error
+        if (error instanceof Error && error.message.includes('SESSION_EXPIRED') && retryCount < maxRetries) {
+          logger.warn(`🔄 Session expired, attempting re-authentication (attempt ${retryCount + 1}/${maxRetries})`);
+          
+          // Clear cached tokens from file
+          const fs = await import('fs');
+          const tokenCachePath = 'token-cache.json';
+          if (fs.existsSync(tokenCachePath)) {
+            logger.debug('🗑️  Removing expired token cache file');
+            fs.unlinkSync(tokenCachePath);
+          }
+          
+          // Invalidate in-memory authentication state
+          this.authenticator.invalidateAuth();
+          
+          // Force fresh authentication with Playwright
+          try {
+            logger.info('🔐 Starting fresh authentication with certificate...');
+            token = await this.authenticator.ensureAuthenticated();
+            logger.info('✅ Re-authentication successful, retrying tool call');
+            retryCount++;
+            continue; // Retry the tool call
+          } catch (reauthError) {
+            logger.error('❌ Re-authentication failed:', reauthError);
+            return {
+              jsonrpc: '2.0',
+              id: message.id,
+              error: {
+                code: -32603,
+                message: `Re-authentication failed: ${reauthError instanceof Error ? reauthError.message : 'Unknown error'}`
+              }
+            };
+          }
+        }
+        
+        // Not a session expiry or retry failed
+        logger.error('Tool call failed:', error);
+        return {
+          jsonrpc: '2.0',
+          id: message.id,
+          error: {
+            code: -32603,
+            message: `Tool execution failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+          }
+        };
+      }
     }
+    
+    // Should never reach here, but just in case
+    return {
+      jsonrpc: '2.0',
+      id: message.id,
+      error: {
+        code: -32603,
+        message: 'Maximum retry attempts exceeded'
+      }
+    };
   }
 
   /**
@@ -582,6 +632,7 @@ class HttpSapNoteMcpServer {
     logger.info('Shutting down HTTP MCP server...');
     try {
       await this.stop();
+      await this.sapNotesClient.cleanup(); // Close persistent browser session
       await this.authenticator.destroy();
       logger.info('Server shutdown completed');
     } catch (error) {

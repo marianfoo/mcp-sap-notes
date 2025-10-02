@@ -41,6 +41,12 @@ export class SapNotesApiClient {
   private rawNotesUrl = 'https://me.sap.com/backend/raw/sapnotes';
   private coveoSearchUrl = 'https://sapamericaproductiontyfzmfz0.org.coveo.com/rest/search/v2';
   private coveoOrgId = 'sapamericaproductiontyfzmfz0';
+  
+  // Persistent browser session to avoid session cookie expiration
+  private browser: Browser | null = null;
+  private browserContext: any = null;
+  private browserLastUsed: number = 0;
+  private readonly BROWSER_IDLE_TIMEOUT = 5 * 60 * 1000; // Close browser after 5 minutes idle
 
   constructor(config: ServerConfig) {
     this.config = config;
@@ -195,37 +201,64 @@ export class SapNotesApiClient {
   private async getCoveoToken(sapToken: string): Promise<string> {
     logger.debug('🔑 Fetching Coveo bearer token from SAP session using Playwright');
     
-    let browser: Browser | null = null;
     let page: Page | null = null;
 
     try {
-      // Launch browser with cookies
-      logger.debug('🎭 Launching browser to extract Coveo token');
-      
-      browser = await chromium.launch({
-        headless: !this.config.headful,
-        args: ['--disable-dev-shm-usage', '--no-sandbox']
-      });
-
-      const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-      });
-
-      // Add cookies from cached authentication
-      const cookies = await this.getCachedCookies();
-      if (cookies.length > 0) {
-        await context.addCookies(cookies);
-        logger.debug(`🍪 Added ${cookies.length} cached cookies to browser context`);
-      } else {
-        // Fallback to parsing token string
-        const parsedCookies = this.parseCookiesFromToken(sapToken);
-        if (parsedCookies.length > 0) {
-          await context.addCookies(parsedCookies);
-          logger.debug(`🍪 Added ${parsedCookies.length} parsed cookies to browser context`);
-        }
+      // Check if we need to close idle browser
+      const now = Date.now();
+      if (this.browser && (now - this.browserLastUsed > this.BROWSER_IDLE_TIMEOUT)) {
+        logger.debug('🧹 Closing idle browser session');
+        await this.browser.close().catch(() => {});
+        this.browser = null;
+        this.browserContext = null;
       }
 
-      page = await context.newPage();
+      // Reuse existing browser session or create new one
+      if (!this.browser || !this.browser.isConnected()) {
+        logger.debug('🎭 Launching new persistent browser session');
+        
+        this.browser = await chromium.launch({
+          headless: !this.config.headful,
+          args: ['--disable-dev-shm-usage', '--no-sandbox']
+        });
+
+        this.browserContext = await this.browser.newContext({
+          userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+        });
+
+        // Add cookies from cached authentication
+        const cookies = await this.getCachedCookies();
+        if (cookies.length > 0) {
+          // Filter out session cookies and log them
+          const sessionCookies = cookies.filter(c => c.expires === -1);
+          const persistentCookies = cookies.filter(c => c.expires !== -1);
+          
+          if (sessionCookies.length > 0) {
+            logger.warn(`⚠️  Found ${sessionCookies.length} session cookies (may expire): ${sessionCookies.map(c => c.name).join(', ')}`);
+          }
+          
+          await this.browserContext.addCookies(cookies);
+          logger.debug(`🍪 Added ${cookies.length} cached cookies (${persistentCookies.length} persistent, ${sessionCookies.length} session)`);
+        } else {
+          // Fallback to parsing token string
+          const parsedCookies = this.parseCookiesFromToken(sapToken);
+          if (parsedCookies.length > 0) {
+            await this.browserContext.addCookies(parsedCookies);
+            logger.debug(`🍪 Added ${parsedCookies.length} parsed cookies to browser context`);
+          }
+        }
+        
+        logger.info('✅ Persistent browser session created - session cookies will remain valid');
+      } else {
+        logger.debug('♻️  Reusing existing browser session (session cookies still valid)');
+      }
+
+      this.browserLastUsed = now;
+      page = await this.browserContext.newPage();
+      
+      if (!page) {
+        throw new Error('Failed to create browser page');
+      }
       
       // Set up response listener to detect redirects to login pages
       let wasRedirectedToLogin = false;
@@ -254,22 +287,29 @@ export class SapNotesApiClient {
 
       // First, go to the home page to ensure we're fully authenticated
       logger.debug(`🌐 Navigating to SAP home page first...`);
-      let response = await page.goto('https://me.sap.com/home', {
-        waitUntil: 'domcontentloaded',  // Less strict than networkidle
-        timeout: 60000  // Increase timeout to 60s
-      });
-
-      logger.debug(`📊 Home page loaded: ${response?.status()} - ${page.url().substring(0, 100)}...`);
+      let response;
+      
+      try {
+        response = await page.goto('https://me.sap.com/home', {
+          waitUntil: 'load',  // Wait for page load
+          timeout: 30000  // Reduce timeout to 30s
+        });
+        logger.debug(`📊 Home page loaded: ${response?.status()} - ${page.url().substring(0, 100)}...`);
+      } catch (gotoError) {
+        logger.warn(`⚠️ Home page navigation timeout/error, trying direct search page: ${gotoError instanceof Error ? gotoError.message : String(gotoError)}`);
+        // Continue anyway - maybe direct navigation to search will work
+      }
 
       // Check if we were redirected to login page
-      if (wasRedirectedToLogin || page.url().includes('authentication.') || page.url().includes('saml/login')) {
+      const currentUrl = page.url();
+      if (wasRedirectedToLogin || currentUrl.includes('authentication.') || currentUrl.includes('saml/login')) {
         logger.error('❌ Session expired or cookies invalid - redirected to login page');
         logger.error('💡 Please run fresh authentication to update cached cookies');
         throw new Error('Session expired - authentication required. Run test:auth to refresh credentials.');
       }
 
       // Wait for any initialization
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(1000);
       
       // Now navigate to knowledge search page with a query to trigger Coveo API
       const searchParams = JSON.stringify({
@@ -282,15 +322,19 @@ export class SapNotesApiClient {
       const searchPageUrl = `https://me.sap.com/knowledge/search/${encodeURIComponent(searchParams)}`;
       logger.debug(`🌐 Now navigating to knowledge search: ${searchPageUrl.substring(0, 100)}...`);
 
-      response = await page.goto(searchPageUrl, {
-        waitUntil: 'domcontentloaded',  // Less strict than networkidle  
-        timeout: 60000  // Increase timeout to 60s
-      });
-
-      logger.debug(`📊 Search page loaded: ${response?.status()} - ${page.url().substring(0, 100)}...`);
+      try {
+        response = await page.goto(searchPageUrl, {
+          waitUntil: 'load',  // Wait for page load
+          timeout: 30000  // Reduce timeout to 30s
+        });
+        logger.debug(`📊 Search page loaded: ${response?.status()} - ${page.url().substring(0, 100)}...`);
+      } catch (searchGotoError) {
+        logger.error(`❌ Search page navigation failed: ${searchGotoError instanceof Error ? searchGotoError.message : String(searchGotoError)}`);
+        throw new Error(`Failed to load SAP search page: ${searchGotoError instanceof Error ? searchGotoError.message : 'Navigation timeout'}`);
+      }
 
       // Wait for Coveo API call to complete
-      await page.waitForTimeout(3000);
+      await page.waitForTimeout(2000);
       logger.debug(`🔍 Coveo token captured from network: ${coveoToken ? 'YES' : 'NO'}`);
 
       // Try to extract token from page JavaScript context
@@ -363,15 +407,38 @@ export class SapNotesApiClient {
       
     } catch (error) {
       logger.error('❌ Failed to get Coveo token:', error);
+      
+      // If session expired, throw special error and close browser to force re-auth
+      if (error instanceof Error && error.message.includes('Session expired')) {
+        logger.warn('🔄 Session expired detected - closing browser to force fresh authentication');
+        if (this.browser) {
+          await this.browser.close().catch(() => {});
+          this.browser = null;
+          this.browserContext = null;
+        }
+        throw new Error('SESSION_EXPIRED');
+      }
+      
       throw new Error(`Failed to get Coveo bearer token: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
-      // Cleanup
+      // Only close the page, keep browser alive for session cookie persistence
       if (page) {
         await page.close().catch(() => {});
       }
-      if (browser) {
-        await browser.close().catch(() => {});
-      }
+      // DON'T close the browser - we need to keep session cookies alive
+      // Browser will be closed after BROWSER_IDLE_TIMEOUT or on explicit cleanup
+    }
+  }
+  
+  /**
+   * Cleanup method - call this when shutting down the server
+   */
+  async cleanup(): Promise<void> {
+    if (this.browser) {
+      logger.debug('🧹 Closing persistent browser session');
+      await this.browser.close().catch(() => {});
+      this.browser = null;
+      this.browserContext = null;
     }
   }
 
@@ -974,7 +1041,7 @@ export class SapNotesApiClient {
   /**
    * Get cached cookies from the token cache file
    */
-  private async getCachedCookies(): Promise<Array<{name: string, value: string, domain: string, path: string}>> {
+  private async getCachedCookies(): Promise<Array<{name: string, value: string, domain: string, path: string, expires?: number, secure?: boolean, httpOnly?: boolean, sameSite?: 'Strict' | 'Lax' | 'None'}>> {
     try {
       const { readFileSync, existsSync } = await import('fs');
       const { dirname, join } = await import('path');

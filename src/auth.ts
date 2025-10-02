@@ -76,6 +76,15 @@ export class SapAuthenticator {
   }
 
   /**
+   * Invalidate current authentication and force fresh login
+   * Call this when session cookies have expired or been rejected by SAP
+   */
+  invalidateAuth(): void {
+    logger.warn('🗑️  Invalidating cached authentication');
+    this.authState = { isAuthenticated: false };
+  }
+  
+  /**
    * Check if the current token is valid and not expired
    */
   private isTokenValid(): boolean {

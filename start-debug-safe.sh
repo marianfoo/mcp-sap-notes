@@ -61,5 +61,5 @@ fi
 # Step 6: Start server directly (skip npm to avoid spawning issues)
 echo "6️⃣ Starting debug server..."
 echo ""
-HTTP_PORT=3123 AUTO_START=true DEBUG_START=true node dist/http-mcp-server.js
+LOG_LEVEL=debug HTTP_PORT=3123 AUTO_START=true DEBUG_START=true node dist/http-mcp-server.js
 

@@ -3,8 +3,7 @@
 module.exports = {
   apps: [{
     name: 'mcp-sap-notes',
-    script: 'npm',
-    args: 'run serve:http',
+    script: 'dist/http-mcp-server.js',
     cwd: '/root/mcp-sap-notes',
     exec_mode: 'fork',
     instances: 1,
@@ -13,7 +12,9 @@ module.exports = {
     max_memory_restart: '1G',
     env: {
       NODE_ENV: 'production',
-      HTTP_PORT: 3123
+      HTTP_PORT: 3123,
+      LOG_LEVEL: 'debug',
+      AUTO_START: 'true'
     },
     log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
     merge_logs: true,
