@@ -6,6 +6,9 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5-blue.svg)](https://www.typescriptlang.org/)
 
+> [!CAUTION]
+> **This MCP Server uses private APIs from SAP behind authentication. Please check whether the use violates SAP's ToC. The author assumes no liability for this.**
+
 This Model Context Protocol (MCP) server provides direct access to SAP Notes and Knowledge Base articles through Cursor AI. It uses SAP Passport certificate authentication and Playwright browser automation to retrieve actual note content from SAP's systems.
 
 ## ✨ Features
