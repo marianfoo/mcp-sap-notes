@@ -227,10 +227,39 @@ export class SapAuthenticator {
         logger.warn('💡 Consider setting HEADFUL=true in your Cursor MCP configuration for debugging');
       }
 
-      // Launch browser
+      // Launch browser with retry logic for transient resource errors
       logger.warn('🎬 Browser launching...');
-      this.browser = await browserLauncher.launch(launchOptions);
-      logger.warn('✅ Browser launched successfully');
+      const maxRetries = 3;
+      let lastError: Error | null = null;
+      
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          this.browser = await browserLauncher.launch(launchOptions);
+          logger.warn(`✅ Browser launched successfully (attempt ${attempt}/${maxRetries})`);
+          break;
+        } catch (error) {
+          lastError = error as Error;
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          
+          // Check if it's a resource exhaustion error
+          if (errorMsg.includes('pthread_create') || errorMsg.includes('Resource temporarily unavailable')) {
+            if (attempt < maxRetries) {
+              const delayMs = Math.pow(2, attempt) * 1000; // Exponential backoff: 2s, 4s, 8s
+              logger.warn(`⚠️ Browser launch failed (attempt ${attempt}/${maxRetries}): Resource temporarily unavailable`);
+              logger.warn(`⏳ Retrying in ${delayMs/1000}s...`);
+              await new Promise(resolve => setTimeout(resolve, delayMs));
+              continue;
+            }
+          }
+          
+          // Non-retryable error or max retries reached
+          throw error;
+        }
+      }
+      
+      if (!this.browser) {
+        throw new Error(`Failed to launch browser after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`);
+      }
 
       // Prepare context options
       const contextOptions = {

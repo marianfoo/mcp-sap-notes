@@ -19,9 +19,10 @@ const __dirname = dirname(__filename);
 config({ path: join(__dirname, '..', '.env') });
 
 /**
- * SAP Note MCP HTTP Server using the MCP SDK (default implementation)
+ * SAP Note MCP HTTP Server using the official MCP SDK
+ * This implementation uses the latest MCP protocol with Streamable HTTP transport
  */
-class HttpSapNoteMcpServer {
+class HttpSapNoteMcpServerOfficial {
   private config: ServerConfig;
   private authenticator: SapAuthenticator;
   private sapNotesClient: SapNotesApiClient;
@@ -34,7 +35,7 @@ class HttpSapNoteMcpServer {
     this.authenticator = new SapAuthenticator(this.config);
     this.sapNotesClient = new SapNotesApiClient(this.config);
     
-    // Create MCP server
+    // Create MCP server with official SDK
     this.mcpServer = new McpServer({
       name: 'sap-note-search-mcp',
       version: '0.3.0'
@@ -99,7 +100,7 @@ class HttpSapNoteMcpServer {
   private setupMiddleware(): void {
     // Enable CORS for all routes
     this.app.use(cors({
-      origin: '*',
+      origin: '*', // Allow all origins for development
       methods: ['GET', 'POST', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization', 'mcp-session-id'],
       exposedHeaders: ['Mcp-Session-Id'],
@@ -195,7 +196,9 @@ class HttpSapNoteMcpServer {
         status: 'healthy',
         server: 'sap-note-search-mcp',
         version: '0.3.0',
-        protocol: 'streamable-http'
+        sdk: 'official-mcp-sdk-v1.20.0',
+        protocol: 'streamable-http-latest',
+        implementation: 'official'
       });
     });
 
@@ -236,7 +239,7 @@ class HttpSapNoteMcpServer {
   }
 
   /**
-   * Setup MCP tools using the MCP SDK
+   * Setup MCP tools using the official SDK
    */
   private setupTools(): void {
     // SAP Note Search Tool
@@ -425,7 +428,7 @@ class HttpSapNoteMcpServer {
   async start(): Promise<void> {
     const port = process.env.HTTP_PORT || 3123;
     
-    logger.warn('🚀 Starting HTTP SAP Note MCP Server');
+    logger.warn('🚀 Starting HTTP SAP Note MCP Server (Official SDK)');
     logger.warn(`📡 Server will be available at: http://localhost:${port}/mcp`);
 
     return new Promise((resolve) => {
@@ -506,7 +509,7 @@ if (process.env.DEBUG_START === 'true') {
 }
 
 if (shouldStart) {
-  const server = new HttpSapNoteMcpServer();
+  const server = new HttpSapNoteMcpServerOfficial();
   
   // Handle process termination gracefully
   process.on('SIGINT', () => server.shutdown());
@@ -520,6 +523,4 @@ if (shouldStart) {
   console.error('⏸️  Server not started (module imported, not run directly)');
 }
 
-export { HttpSapNoteMcpServer };
-
-
+export { HttpSapNoteMcpServerOfficial };

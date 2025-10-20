@@ -94,13 +94,25 @@ This Model Context Protocol (MCP) server provides direct access to SAP Notes and
 
 1. **Open Cursor settings** (`Cmd/Ctrl + ,`)
 
-2. **Add MCP server configuration** to your `settings.json`:
+2. **Add MCP server configuration** to your `settings.json` (default):
    ```json
    {
      "mcpServers": {
        "sap-note-search": {
          "command": "node",
-         "args": ["/full/path/to/sap-note-search-mcp/dist/mcp-server.js"]
+         "args": ["/full/path/to/mcp-sap-notes/dist/mcp-server.js"]
+       }
+     }
+   }
+   ```
+
+   Alternative:
+   ```json
+   {
+     "mcpServers": {
+       "sap-note-search": {
+         "command": "node",
+         "args": ["/full/path/to/mcp-sap-notes/dist/mcp-server.js"]
        }
      }
    }
@@ -238,7 +250,7 @@ sap-note-search-mcp/
 | `PFX_PATH` | ✅ | - | Path to SAP Passport certificate (.pfx) |
 | `PFX_PASSPHRASE` | ✅ | - | Certificate passphrase |
 | `ACCESS_TOKEN` | ❌ | - | Bearer token for HTTP server authentication |
-| `HTTP_PORT` | ❌ | `3002` | HTTP server port |
+| `HTTP_PORT` | ❌ | `3123` | HTTP server port |
 | `MAX_JWT_AGE_H` | ❌ | `12` | Token cache lifetime (hours) |
 | `HEADFUL` | ❌ | `false` | Browser visibility (for debugging) |
 | `LOG_LEVEL` | ❌ | `info` | Logging level (debug, info, warn, error) |
@@ -261,16 +273,22 @@ npx playwright install chromium
 
 ### HTTP Server Authentication
 
-The HTTP MCP server supports simple bearer token authentication. To enable it:
+The HTTP MCP server supports simple bearer token authentication. To use it:
+
+0. **Start the HTTP server** (default):
+   ```bash
+   HTTP_PORT=3123 npm run serve:http
+   ```
 
 1. **Set the ACCESS_TOKEN environment variable** in your `.env` file:
    ```env
    ACCESS_TOKEN=your-secret-token-here
    ```
 
-2. **Clients must include the Authorization header** in all requests:
+2. **Clients must include an authentication header** in all requests (either format works):
    ```bash
-   curl -X POST http://localhost:3002/mcp \
+   # Standard format
+   curl -X POST http://localhost:3123/mcp \
      -H "Authorization: Bearer your-secret-token-here" \
      -H "Content-Type: application/json" \
      -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'

@@ -1,11 +1,9 @@
 import { config } from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join, isAbsolute } from 'path';
-import express from 'express';
-import cors from 'cors';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { ServerConfig } from './types.js';
 import { SapAuthenticator } from './auth.js';
 import { SapNotesApiClient } from './sap-notes-api.js';
@@ -19,30 +17,26 @@ const __dirname = dirname(__filename);
 config({ path: join(__dirname, '..', '.env') });
 
 /**
- * SAP Note MCP HTTP Server using the MCP SDK (default implementation)
+ * SAP Note MCP Server using the official MCP SDK
+ * This implementation uses the latest MCP protocol and compliant tool schemas
  */
-class HttpSapNoteMcpServer {
+class SapNoteMcpServerOfficial {
   private config: ServerConfig;
   private authenticator: SapAuthenticator;
   private sapNotesClient: SapNotesApiClient;
   private mcpServer: McpServer;
-  private app: express.Application;
-  private server: any;
 
   constructor() {
     this.config = this.loadConfig();
     this.authenticator = new SapAuthenticator(this.config);
     this.sapNotesClient = new SapNotesApiClient(this.config);
     
-    // Create MCP server
+    // Create MCP server with official SDK
     this.mcpServer = new McpServer({
       name: 'sap-note-search-mcp',
       version: '0.3.0'
     });
 
-    this.app = express();
-    this.setupMiddleware();
-    this.setupRoutes();
     this.setupTools();
   }
 
@@ -55,12 +49,6 @@ class HttpSapNoteMcpServer {
     
     if (missing.length > 0) {
       throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
-    }
-    
-    // Warn if ACCESS_TOKEN is not set (optional but recommended)
-    if (!process.env.ACCESS_TOKEN) {
-      logger.warn('⚠️  ACCESS_TOKEN not set - server will run WITHOUT authentication');
-      logger.warn('⚠️  Set ACCESS_TOKEN in .env to enable bearer token authentication');
     }
 
     // Resolve PFX path relative to the project root (where package.json is)
@@ -94,149 +82,7 @@ class HttpSapNoteMcpServer {
   }
 
   /**
-   * Setup Express middleware
-   */
-  private setupMiddleware(): void {
-    // Enable CORS for all routes
-    this.app.use(cors({
-      origin: '*',
-      methods: ['GET', 'POST', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'mcp-session-id'],
-      exposedHeaders: ['Mcp-Session-Id'],
-      credentials: false
-    }));
-
-    // Parse JSON bodies
-    this.app.use(express.json());
-
-    // Logging middleware
-    this.app.use((req, res, next) => {
-      logger.info(`${req.method} ${req.path}`);
-      next();
-    });
-  }
-
-  /**
-   * Simple bearer token authentication middleware
-   */
-  private authMiddleware = (req: express.Request, res: express.Response, next: Function): void => {
-    const accessToken = process.env.ACCESS_TOKEN;
-    
-    // If no token is configured or it's empty, allow all requests
-    if (!accessToken || accessToken.trim() === '') {
-      logger.debug('🔓 No ACCESS_TOKEN configured - allowing request without authentication');
-      return next();
-    }
-
-    // Try multiple header sources (supports Microsoft Power Platform proxy and standard clients)
-    const authHeader = req.headers.authorization;
-    const bearerHeader = req.headers.bearer as string | undefined;
-    
-    let token: string | undefined;
-    
-    // Option 1: Check custom 'bearer' header (Microsoft Power Platform style)
-    if (bearerHeader) {
-      token = bearerHeader;
-      logger.info(`🔑 Token found in 'bearer' header (Power Platform style)`);
-    }
-    // Option 2: Standard 'Authorization: Bearer <token>' header
-    else if (authHeader) {
-      const parts = authHeader.split(' ');
-      if (parts.length === 2 && parts[0] === 'Bearer') {
-        token = parts[1];
-        logger.info(`🔑 Token found in 'Authorization' header (standard format)`);
-      } else {
-        logger.warn(`⚠️  Authorization header present but invalid format: "${authHeader}"`);
-      }
-    }
-    
-    // No valid token found
-    if (!token) {
-      logger.warn('❌ Authentication failed: No valid token in headers');
-      logger.info(`🔍 Headers checked: authorization="${authHeader}", bearer="${bearerHeader}"`);
-      res.status(401).json({
-        jsonrpc: '2.0',
-        id: req.body?.id || null,
-        error: {
-          code: -32001,
-          message: 'Unauthorized: Missing or invalid authorization',
-          data: 'Provide token in "Authorization: Bearer <token>" header or "bearer" header'
-        }
-      });
-      return;
-    }
-
-    // Validate the token
-    if (token !== accessToken) {
-      logger.warn(`❌ Authentication failed: Invalid token (length: ${token.length})`);
-      res.status(401).json({
-        jsonrpc: '2.0',
-        id: req.body?.id || null,
-        error: {
-          code: -32001,
-          message: 'Unauthorized: Invalid access token'
-        }
-      });
-      return;
-    }
-
-    // Token is valid, proceed
-    logger.info('✅ Authentication successful');
-    next();
-  };
-
-  /**
-   * Setup Express routes
-   */
-  private setupRoutes(): void {
-    // Health check endpoint
-    this.app.get('/health', (req: express.Request, res: express.Response) => {
-      res.json({ 
-        status: 'healthy',
-        server: 'sap-note-search-mcp',
-        version: '0.3.0',
-        protocol: 'streamable-http'
-      });
-    });
-
-    // MCP endpoint - handles all MCP JSON-RPC requests (with auth middleware)
-    this.app.post('/mcp', this.authMiddleware, async (req: express.Request, res: express.Response) => {
-      try {
-        // Create a new transport for each request to prevent request ID collisions
-        const transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: undefined,
-          enableJsonResponse: true
-        });
-
-        res.on('close', () => {
-          transport.close();
-        });
-
-        await this.mcpServer.connect(transport);
-        await transport.handleRequest(req, res, req.body);
-      } catch (error) {
-        logger.error('Error handling MCP request:', error);
-        if (!res.headersSent) {
-          res.status(500).json({
-            jsonrpc: '2.0',
-            error: {
-              code: -32603,
-              message: 'Internal server error'
-            },
-            id: null
-          });
-        }
-      }
-    });
-
-    // Handle preflight OPTIONS requests
-    this.app.options('/mcp', (req: express.Request, res: express.Response) => {
-      res.status(200).end();
-    });
-  }
-
-  /**
-   * Setup MCP tools using the MCP SDK
+   * Setup MCP tools using the official SDK
    */
   private setupTools(): void {
     // SAP Note Search Tool
@@ -420,36 +266,23 @@ class HttpSapNoteMcpServer {
   }
 
   /**
-   * Start the HTTP server
+   * Start the MCP server with stdio transport
    */
   async start(): Promise<void> {
-    const port = process.env.HTTP_PORT || 3123;
+    logger.warn('🚀 Starting SAP Note MCP Server (Official SDK)');
     
-    logger.warn('🚀 Starting HTTP SAP Note MCP Server');
-    logger.warn(`📡 Server will be available at: http://localhost:${port}/mcp`);
-
-    return new Promise((resolve) => {
-      this.server = this.app.listen(port, () => {
-        logger.warn(`🌐 HTTP MCP Server running on port ${port}`);
-        logger.warn(`🔗 MCP endpoint: http://localhost:${port}/mcp`);
-        logger.warn(`💡 Health check: http://localhost:${port}/health`);
-        logger.warn('✅ Server ready to accept connections');
-        resolve();
-      });
-    });
-  }
-
-  /**
-   * Stop the HTTP server
-   */
-  async stop(): Promise<void> {
-    if (this.server) {
-      return new Promise((resolve) => {
-        this.server.close(() => {
-          logger.info('HTTP server stopped');
-          resolve();
-        });
-      });
+    try {
+      // Create stdio transport
+      const transport = new StdioServerTransport();
+      
+      // Connect server to transport
+      await this.mcpServer.connect(transport);
+      
+      logger.warn('✅ MCP Server connected and ready');
+      
+    } catch (error) {
+      logger.error('❌ Failed to start MCP server:', error);
+      throw error;
     }
   }
 
@@ -457,16 +290,13 @@ class HttpSapNoteMcpServer {
    * Graceful shutdown
    */
   async shutdown(): Promise<void> {
-    logger.info('Shutting down HTTP MCP server...');
+    logger.info('Shutting down MCP server...');
     try {
-      await this.stop();
-      await this.sapNotesClient.cleanup();
       await this.authenticator.destroy();
       logger.info('Server shutdown completed');
     } catch (error) {
       logger.error('Error during shutdown:', error);
     }
-    process.exit(0);
   }
 }
 
@@ -475,51 +305,30 @@ const isDirectRun = (() => {
   try {
     const thisFile = fileURLToPath(import.meta.url);
     const invoked = process.argv[1] ? join(process.cwd(), process.argv[1]) : '';
-    const matches = thisFile === invoked;
-    
-    // Debug output to help troubleshooting
-    if (process.env.DEBUG_START === 'true') {
-      console.error('🔍 Direct run check:');
-      console.error('  thisFile:', thisFile);
-      console.error('  invoked:', invoked);
-      console.error('  matches:', matches);
-    }
-    
-    return matches;
-  } catch (error) {
-    if (process.env.DEBUG_START === 'true') {
-      console.error('❌ Error in isDirectRun check:', error);
-    }
+    return thisFile === invoked;
+  } catch {
     return false;
   }
 })();
 
-// Start server if:
-// 1. File is run directly, OR
-// 2. AUTO_START environment variable is set to 'true'
-const shouldStart = isDirectRun || process.env.AUTO_START === 'true';
-
-if (process.env.DEBUG_START === 'true') {
-  console.error('🚦 Should start server:', shouldStart);
-  console.error('   - isDirectRun:', isDirectRun);
-  console.error('   - AUTO_START:', process.env.AUTO_START);
-}
-
-if (shouldStart) {
-  const server = new HttpSapNoteMcpServer();
+if (isDirectRun) {
+  const server = new SapNoteMcpServerOfficial();
   
   // Handle process termination gracefully
-  process.on('SIGINT', () => server.shutdown());
-  process.on('SIGTERM', () => server.shutdown());
+  process.on('SIGINT', () => server.shutdown().then(() => process.exit(0)));
+  process.on('SIGTERM', () => server.shutdown().then(() => process.exit(0)));
   
   server.start().catch((error) => {
-    logger.error('Failed to start HTTP server:', error);
+    logger.error('Failed to start server:', error);
     process.exit(1);
   });
-} else if (process.env.DEBUG_START === 'true') {
-  console.error('⏸️  Server not started (module imported, not run directly)');
 }
 
-export { HttpSapNoteMcpServer };
+export { SapNoteMcpServerOfficial };
+
+
+
+
+
 
 
