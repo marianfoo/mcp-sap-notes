@@ -39,9 +39,10 @@ This MCP server provides direct access to SAP Notes and Knowledge Base articles 
 
 ### MCP Protocol Compliance
 1. **JSON-RPC 2.0** → Standard MCP protocol over stdin/stdout
-2. **Tool Schemas** → JSON Schema validation for all inputs
-3. **Error Handling** → Proper HTTP status codes and error messages
-4. **Capabilities** → Advertises available tools and resources
+2. **Tool Schemas** → Enhanced Zod schemas with comprehensive descriptions and validation
+3. **Enhanced Tool Descriptions** → 3000+ character descriptions with structured guidance
+4. **Error Handling** → Proper HTTP status codes and error messages
+5. **Capabilities** → Advertises available tools and resources
 
 ---
 
@@ -52,14 +53,23 @@ This MCP server provides direct access to SAP Notes and Knowledge Base articles 
 #### `sap_note_search`
 Search SAP Notes and KB articles by note ID or keywords.
 
+**Enhanced Description:** This tool includes comprehensive documentation (3,228 characters) with:
+- USE WHEN / DO NOT USE WHEN guidance
+- Query construction best practices
+- Workflow patterns for tool chaining
+- Good vs bad query examples
+- Expected output structure
+
 **Input Schema:**
 ```json
 {
   "type": "object",
   "properties": {
     "q": { 
-      "type": "string", 
-      "description": "Query string or Note ID (e.g. '2744792')" 
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 200,
+      "description": "Search query with SAP-specific terminology and error codes"
     },
     "lang": { 
       "type": "string", 
@@ -74,10 +84,18 @@ Search SAP Notes and KB articles by note ID or keywords.
 
 **Examples:**
 - `{ "q": "2744792" }` - Find specific note by ID
-- `{ "q": "OData gateway error" }` - Search by keywords
+- `{ "q": "error 415 CAP action" }` - Search with specific error code
+- `{ "q": "MM02 material master dump" }` - Transaction + module + issue
 
 #### `sap_note_get`
 Retrieve full content and metadata for a specific SAP Note.
+
+**Enhanced Description:** This tool includes comprehensive documentation (2,911 characters) with:
+- USE WHEN / DO NOT USE WHEN guidance
+- Parameter validation requirements
+- Workflow patterns (search → get chaining)
+- Error handling guidance
+- Best practices for content extraction
 
 **Input Schema:**
 ```json
@@ -85,9 +103,10 @@ Retrieve full content and metadata for a specific SAP Note.
   "type": "object",
   "properties": {
     "id": { 
-      "type": "string", 
-      "description": "SAP Note ID", 
-      "pattern": "^[0-9]{6,8}$" 
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9A-Za-z]+$",
+      "description": "SAP Note ID (typically 6-8 digits, alphanumeric)"
     },
     "lang": { 
       "type": "string", 
@@ -102,6 +121,7 @@ Retrieve full content and metadata for a specific SAP Note.
 
 **Examples:**
 - `{ "id": "2744792" }` - Get complete note details
+- `{ "id": "438342" }` - Retrieve note content
 
 ### Environment Variables
 
@@ -119,12 +139,14 @@ Retrieve full content and metadata for a specific SAP Note.
 
 | Aspect | Details |
 |--------|---------|
-| **Protocol** | JSON-RPC 2.0 over stdin/stdout |
-| **Tools** | `sap_note_search`, `sap_note_get` |
+| **Protocol** | JSON-RPC 2.0 over stdin/stdout or HTTP |
+| **Tools** | `sap_note_search`, `sap_note_get` (with enhanced descriptions) |
+| **Tool Descriptions** | 3000+ chars with structured guidance, examples, and validation |
+| **Schema Validation** | Zod schemas with comprehensive constraints |
 | **Auth Flow** | SAP Passport → Browser Automation → Cookie Extraction |
 | **API** | SAP Raw Notes API (`me.sap.com/backend/raw/sapnotes`) |
 | **Caching** | Local token cache (configurable expiry) |
-| **Dependencies** | Playwright (browser automation) |
+| **Dependencies** | Playwright (browser automation), Zod (validation) |
 
 ### Common Usage Examples
 

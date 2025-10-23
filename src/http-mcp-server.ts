@@ -10,6 +10,14 @@ import type { ServerConfig } from './types.js';
 import { SapAuthenticator } from './auth.js';
 import { SapNotesApiClient } from './sap-notes-api.js';
 import { logger } from './logger.js';
+import {
+  NoteSearchInputSchema,
+  NoteSearchOutputSchema,
+  NoteGetInputSchema,
+  NoteGetOutputSchema,
+  SAP_NOTE_SEARCH_DESCRIPTION,
+  SAP_NOTE_GET_DESCRIPTION
+} from './schemas/sap-notes.js';
 
 // Get the directory of this module for resolving paths
 const __filename = fileURLToPath(import.meta.url);
@@ -19,7 +27,8 @@ const __dirname = dirname(__filename);
 config({ path: join(__dirname, '..', '.env') });
 
 /**
- * SAP Note MCP HTTP Server using the MCP SDK (default implementation)
+ * SAP Note MCP HTTP Server using the MCP SDK
+ * This implementation uses enhanced tool descriptions for improved LLM accuracy
  */
 class HttpSapNoteMcpServer {
   private config: ServerConfig;
@@ -34,7 +43,7 @@ class HttpSapNoteMcpServer {
     this.authenticator = new SapAuthenticator(this.config);
     this.sapNotesClient = new SapNotesApiClient(this.config);
     
-    // Create MCP server
+    // Create MCP server with SDK
     this.mcpServer = new McpServer({
       name: 'sap-note-search-mcp',
       version: '0.3.0'
@@ -99,7 +108,7 @@ class HttpSapNoteMcpServer {
   private setupMiddleware(): void {
     // Enable CORS for all routes
     this.app.use(cors({
-      origin: '*',
+      origin: '*', // Allow all origins for development
       methods: ['GET', 'POST', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization', 'mcp-session-id'],
       exposedHeaders: ['Mcp-Session-Id'],
@@ -195,7 +204,9 @@ class HttpSapNoteMcpServer {
         status: 'healthy',
         server: 'sap-note-search-mcp',
         version: '0.3.0',
-        protocol: 'streamable-http'
+        sdk: 'mcp-sdk-v1.20.0',
+        protocol: 'streamable-http',
+        features: ['enhanced-tool-descriptions']
       });
     });
 
@@ -244,24 +255,9 @@ class HttpSapNoteMcpServer {
       'sap_note_search',
       {
         title: 'Search SAP Notes',
-        description: 'Search SAP Notes / KB articles by free text or note ID. Returns a list of matching notes with metadata.',
-        inputSchema: {
-          q: z.string().describe('Query string or Note ID (e.g. "2744792" or "OData gateway error")'),
-          lang: z.enum(['EN', 'DE']).default('EN').describe('Language code for search results')
-        },
-        outputSchema: {
-          totalResults: z.number().describe('Total number of search results found'),
-          query: z.string().describe('The search query that was executed'),
-          results: z.array(z.object({
-            id: z.string().describe('SAP Note ID'),
-            title: z.string().describe('Note title'),
-            summary: z.string().describe('Brief summary of the note'),
-            component: z.string().nullable().describe('SAP component this note relates to'),
-            releaseDate: z.string().describe('Date when the note was released'),
-            language: z.string().describe('Language of the note content'),
-            url: z.string().describe('Direct URL to the SAP Note')
-          })).describe('Array of matching SAP Notes')
-        }
+        description: SAP_NOTE_SEARCH_DESCRIPTION,
+        inputSchema: NoteSearchInputSchema,
+        outputSchema: NoteSearchOutputSchema
       },
       async ({ q, lang = 'EN' }) => {
         logger.info(`🔎 [sap_note_search] Starting search for query: "${q}"`);
@@ -330,23 +326,9 @@ class HttpSapNoteMcpServer {
       'sap_note_get',
       {
         title: 'Get SAP Note Details',
-        description: 'Fetch full metadata and HTML content for a specific SAP Note by ID.',
-        inputSchema: {
-          id: z.string().regex(/^[0-9]{6,8}$/, 'SAP Note ID must be 6-8 digits').describe('SAP Note ID (6-8 digits)'),
-          lang: z.enum(['EN', 'DE']).default('EN').describe('Language code for note content')
-        },
-        outputSchema: {
-          id: z.string().describe('SAP Note ID'),
-          title: z.string().describe('Note title'),
-          summary: z.string().describe('Brief summary of the note'),
-          component: z.string().nullable().describe('SAP component this note relates to'),
-          priority: z.string().nullable().describe('Priority level of the note'),
-          category: z.string().nullable().describe('Category classification'),
-          releaseDate: z.string().describe('Date when the note was released'),
-          language: z.string().describe('Language of the note content'),
-          url: z.string().describe('Direct URL to the SAP Note'),
-          content: z.string().describe('Full HTML content of the note')
-        }
+        description: SAP_NOTE_GET_DESCRIPTION,
+        inputSchema: NoteGetInputSchema,
+        outputSchema: NoteGetOutputSchema
       },
       async ({ id, lang = 'EN' }) => {
         logger.info(`📄 [sap_note_get] Getting note details for ID: ${id}`);
@@ -474,7 +456,7 @@ class HttpSapNoteMcpServer {
 const isDirectRun = (() => {
   try {
     const thisFile = fileURLToPath(import.meta.url);
-    const invoked = process.argv[1] ? join(process.cwd(), process.argv[1]) : '';
+    const invoked = process.argv[1] ? process.argv[1] : '';
     const matches = thisFile === invoked;
     
     // Debug output to help troubleshooting
@@ -521,5 +503,3 @@ if (shouldStart) {
 }
 
 export { HttpSapNoteMcpServer };
-
-
