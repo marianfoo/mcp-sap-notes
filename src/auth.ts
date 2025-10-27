@@ -98,19 +98,128 @@ export class SapAuthenticator {
   }
 
   /**
-   * Check if a specific browser is available
+   * Check if a specific browser is available with detailed debugging
    */
   private static async checkBrowserAvailable(browserType: string = 'chromium'): Promise<boolean> {
     try {
       const browsers = { chromium, firefox, webkit };
       const browser = browsers[browserType as keyof typeof browsers];
-      if (!browser) return false;
+      if (!browser) {
+        logger.error(`❌ Browser type '${browserType}' not found in Playwright`);
+        return false;
+      }
       
-      // Try to get executable path
-      await browser.executablePath();
+      // Try to get executable path with detailed debugging
+      logger.warn(`🔍 Checking ${browserType} browser availability...`);
+      const executablePath = await browser.executablePath();
+      logger.warn(`✅ Browser executable found at: ${executablePath}`);
+      
+      // Check if executable actually exists
+      const fs = await import('fs');
+      if (!fs.existsSync(executablePath)) {
+        logger.error(`❌ Browser executable not found at: ${executablePath}`);
+        return false;
+      }
+      
+      logger.warn(`✅ Browser executable verified at: ${executablePath}`);
       return true;
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error(`❌ Browser availability check failed for ${browserType}:`);
+      logger.error(`   Error: ${errorMessage}`);
+      
+      // Add detailed debugging for Docker/container issues
+      await SapAuthenticator.debugBrowserEnvironment(browserType);
+      
       return false;
+    }
+  }
+
+  /**
+   * Debug browser environment for Docker/container issues
+   */
+  private static async debugBrowserEnvironment(browserType: string): Promise<void> {
+    logger.error(`🔍 Debugging browser environment for ${browserType}:`);
+    
+    // Check environment variables
+    const playwrightEnvVars = [
+      'PLAYWRIGHT_BROWSERS_PATH',
+      'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD',
+      'PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH',
+      'PLAYWRIGHT_FIREFOX_EXECUTABLE_PATH',
+      'PLAYWRIGHT_WEBKIT_EXECUTABLE_PATH'
+    ];
+    
+    logger.error('   Environment variables:');
+    playwrightEnvVars.forEach(envVar => {
+      const value = process.env[envVar];
+      logger.error(`     ${envVar}: ${value || 'NOT_SET'}`);
+    });
+    
+    // Check if running in Docker
+    const fs = await import('fs');
+    const isDocker = fs.existsSync('/.dockerenv') || fs.existsSync('/proc/self/cgroup');
+    logger.error(`   Running in Docker: ${isDocker}`);
+    
+    // Check system information
+    logger.error(`   Platform: ${process.platform}`);
+    logger.error(`   Architecture: ${process.arch}`);
+    logger.error(`   Node version: ${process.version}`);
+    
+    // Check for common browser paths
+    const commonPaths = [
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser', 
+      '/usr/bin/google-chrome',
+      '/usr/bin/firefox',
+      '/opt/google/chrome/chrome',
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+    ];
+    
+    logger.error('   System browser paths:');
+    for (const path of commonPaths) {
+      const exists = fs.existsSync(path);
+      logger.error(`     ${path}: ${exists ? 'EXISTS' : 'NOT_FOUND'}`);
+    }
+    
+    // Check Playwright cache directory
+    const playwrightCache = process.env.PLAYWRIGHT_BROWSERS_PATH || 
+                           `${process.env.HOME || '/root'}/.cache/ms-playwright`;
+    logger.error(`   Playwright cache directory: ${playwrightCache}`);
+    
+    if (fs.existsSync(playwrightCache)) {
+      try {
+        const contents = fs.readdirSync(playwrightCache);
+        logger.error(`     Contents: ${contents.join(', ')}`);
+        
+        // Check specific browser directories
+        contents.forEach(item => {
+          const itemPath = `${playwrightCache}/${item}`;
+          if (fs.statSync(itemPath).isDirectory()) {
+            logger.error(`     ${item}/: ${fs.readdirSync(itemPath).join(', ')}`);
+          }
+        });
+      } catch (e) {
+        logger.error(`     Error reading cache directory: ${e}`);
+      }
+    } else {
+      logger.error('     Cache directory does not exist');
+    }
+    
+    // Check for missing dependencies (Alpine Linux specific)
+    if (isDocker) {
+      logger.error('   Docker-specific checks:');
+      const alpineDeps = [
+        '/usr/lib/libnss3.so',
+        '/usr/lib/libxss.so.1',
+        '/usr/lib/libglib-2.0.so.0',
+        '/lib/libpthread.so.0'
+      ];
+      
+      alpineDeps.forEach(dep => {
+        const exists = fs.existsSync(dep);
+        logger.error(`     ${dep}: ${exists ? 'EXISTS' : 'MISSING'}`);
+      });
     }
   }
 
@@ -229,11 +338,14 @@ export class SapAuthenticator {
 
       // Launch browser with retry logic for transient resource errors
       logger.warn('🎬 Browser launching...');
+      logger.warn(`   Launch options: ${JSON.stringify(launchOptions, null, 2)}`);
+      
       const maxRetries = 3;
       let lastError: Error | null = null;
       
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
+          logger.warn(`🚀 Browser launch attempt ${attempt}/${maxRetries}...`);
           this.browser = await browserLauncher.launch(launchOptions);
           logger.warn(`✅ Browser launched successfully (attempt ${attempt}/${maxRetries})`);
           break;
@@ -241,24 +353,85 @@ export class SapAuthenticator {
           lastError = error as Error;
           const errorMsg = error instanceof Error ? error.message : String(error);
           
+          // Log the FULL error details for debugging
+          logger.error(`❌ Browser launch failed (attempt ${attempt}/${maxRetries}):`);
+          logger.error(`   Error type: ${error instanceof Error ? error.name : 'Unknown'}`);
+          logger.error(`   Error message: ${errorMsg}`);
+          
+          if (error instanceof Error && error.stack) {
+            logger.error(`   Stack trace: ${error.stack}`);
+          }
+          
+          // Log additional error properties if available
+          if (error && typeof error === 'object') {
+            const errorObj = error as any;
+            if (errorObj.code) logger.error(`   Error code: ${errorObj.code}`);
+            if (errorObj.errno) logger.error(`   Error number: ${errorObj.errno}`);
+            if (errorObj.syscall) logger.error(`   System call: ${errorObj.syscall}`);
+            if (errorObj.path) logger.error(`   Path: ${errorObj.path}`);
+          }
+          
+          // Debug browser environment on first failure
+          if (attempt === 1) {
+            await SapAuthenticator.debugBrowserEnvironment(browserType);
+          }
+          
           // Check if it's a resource exhaustion error
           if (errorMsg.includes('pthread_create') || errorMsg.includes('Resource temporarily unavailable')) {
             if (attempt < maxRetries) {
               const delayMs = Math.pow(2, attempt) * 1000; // Exponential backoff: 2s, 4s, 8s
-              logger.warn(`⚠️ Browser launch failed (attempt ${attempt}/${maxRetries}): Resource temporarily unavailable`);
-              logger.warn(`⏳ Retrying in ${delayMs/1000}s...`);
+              logger.warn(`⚠️ Resource exhaustion detected, retrying in ${delayMs/1000}s...`);
               await new Promise(resolve => setTimeout(resolve, delayMs));
               continue;
             }
           }
           
-          // Non-retryable error or max retries reached
-          throw error;
+          // Check for executable not found errors (common in Docker)
+          if (errorMsg.includes('Executable doesn\'t exist') || 
+              errorMsg.includes('ENOENT') ||
+              errorMsg.includes('No such file or directory')) {
+            logger.error(`💡 Browser executable issue detected. Common Docker/Alpine Linux fixes:`);
+            logger.error(`   1. Install Playwright browsers: npx playwright install chromium`);
+            logger.error(`   2. Install system dependencies: apk add chromium nss freetype harfbuzz`);
+            logger.error(`   3. Set PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH to system chromium`);
+            logger.error(`   4. Check if running in headless mode works: HEADFUL=false`);
+          }
+          
+          // Check for permission errors
+          if (errorMsg.includes('EACCES') || errorMsg.includes('Permission denied')) {
+            logger.error(`💡 Permission error detected. Common fixes:`);
+            logger.error(`   1. Check file permissions on browser executable`);
+            logger.error(`   2. Run with different user (non-root may be required)`);
+            logger.error(`   3. Check Docker container security settings`);
+          }
+          
+          // For Alpine Linux / Docker specific issues
+          if (errorMsg.includes('error while loading shared libraries')) {
+            logger.error(`💡 Shared library error detected. Alpine Linux fixes:`);
+            logger.error(`   1. Install missing dependencies: apk add ${errorMsg.match(/lib\w+\.so[\.\d]*/g)?.join(' ')}`);
+            logger.error(`   2. Install browser dependencies: apk add nss freetype harfbuzz ca-certificates`);
+          }
+          
+          // If max retries reached, don't retry
+          if (attempt >= maxRetries) {
+            logger.error(`❌ Max retries (${maxRetries}) reached. Browser launch failed permanently.`);
+            throw error;
+          }
+          
+          // Wait before retry
+          const delayMs = 1000;
+          logger.warn(`⏳ Retrying in ${delayMs/1000}s...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
         }
       }
       
       if (!this.browser) {
-        throw new Error(`Failed to launch browser after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`);
+        const finalErrorMsg = `Failed to launch browser after ${maxRetries} attempts`;
+        logger.error(`❌ ${finalErrorMsg}`);
+        if (lastError) {
+          logger.error(`   Last error: ${lastError.message}`);
+        }
+        throw new Error(`${finalErrorMsg}: ${lastError?.message || 'Unknown error'}`);
       }
 
       // Prepare context options

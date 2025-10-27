@@ -15,9 +15,12 @@
     "start:http": "npm run build && npm run serve:http",
     "start:http:debug": "npm run build && npm run serve:http:debug",
     "test:auth": "npm run build && node test/test-auth.js",
+    "test:auth:debug": "npm run build && HEADFUL=true LOG_LEVEL=debug node test/test-auth.js",
+    "test:docker:debug": "npm run build && node test/test-docker-debug.js",
     "test:mcp": "npm run build && node test/test-mcp-server.js",
     "test:api": "npm run build && node test/test-sap-api.js",
     "test": "npm run test:auth && npm run test:api && npm run test:mcp",
+    "debug:container": "./debug-container.sh",
     "clean": "rimraf dist"
   },
   "keywords": [
