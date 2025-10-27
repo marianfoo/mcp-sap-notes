@@ -109,7 +109,7 @@ class HttpSapNoteMcpServer {
     // Enable CORS for all routes
     this.app.use(cors({
       origin: '*', // Allow all origins for development
-      methods: ['GET', 'POST', 'OPTIONS'],
+      methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization', 'mcp-session-id'],
       exposedHeaders: ['Mcp-Session-Id'],
       credentials: false
@@ -210,13 +210,13 @@ class HttpSapNoteMcpServer {
       });
     });
 
-    // MCP endpoint - handles all MCP JSON-RPC requests (with auth middleware)
-    this.app.post('/mcp', this.authMiddleware, async (req: express.Request, res: express.Response) => {
+    // MCP endpoint handler for both GET and POST requests
+    const mcpHandler = async (req: express.Request, res: express.Response) => {
       try {
         // Create a new transport for each request to prevent request ID collisions
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: undefined,
-          enableJsonResponse: true
+          enableJsonResponse: false  // Enable SSE streams for LibreChat compatibility
         });
 
         res.on('close', () => {
@@ -224,6 +224,7 @@ class HttpSapNoteMcpServer {
         });
 
         await this.mcpServer.connect(transport);
+        // The transport's handleRequest method will determine whether to handle GET (SSE) or POST (JSON-RPC)
         await transport.handleRequest(req, res, req.body);
       } catch (error) {
         logger.error('Error handling MCP request:', error);
@@ -238,7 +239,12 @@ class HttpSapNoteMcpServer {
           });
         }
       }
-    });
+    };
+
+    // Handle GET (SSE streams), POST (JSON-RPC messages), and DELETE (session termination) requests to /mcp
+    this.app.get('/mcp', this.authMiddleware, mcpHandler);
+    this.app.post('/mcp', this.authMiddleware, mcpHandler);
+    this.app.delete('/mcp', this.authMiddleware, mcpHandler);
 
     // Handle preflight OPTIONS requests
     this.app.options('/mcp', (req: express.Request, res: express.Response) => {
