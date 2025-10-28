@@ -268,10 +268,162 @@ export class SapNotesApiClient {
   }
 
   /**
+   * Format cookies from cache for direct API calls
+   * Ensures proper cookie format for fetch requests
+   */
+  private async formatCookiesForAPI(sapToken: string): Promise<string> {
+    logger.debug(`🔍 ENHANCED DEBUG: Cookie formatting analysis:`);
+    logger.debug(`   📊 Input token length: ${sapToken.length}`);
+    logger.debug(`   🔧 Contains '=': ${sapToken.includes('=')}`);
+    logger.debug(`   📄 First 50 chars: ${sapToken.substring(0, 50)}...`);
+    
+    // If sapToken is already in proper cookie format (contains '='), use as-is
+    if (sapToken.includes('=')) {
+      const cookieCount = (sapToken.match(/=/g) || []).length;
+      logger.debug(`   ✅ Using input token as-is (${cookieCount} cookies detected)`);
+      return sapToken;
+    }
+    
+    // Otherwise, try to get cookies from cache and format them
+    try {
+      logger.debug(`   🔍 Token not in cookie format, checking cache...`);
+      const cookies = await this.getCachedCookies();
+      if (cookies.length > 0) {
+        const formattedString = cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+        logger.debug(`   ✅ Formatted ${cookies.length} cookies from cache`);
+        logger.debug(`   🔧 Key cookies: ${cookies.slice(0, 3).map(c => c.name).join(', ')}...`);
+        logger.debug(`   📊 Formatted length: ${formattedString.length}`);
+        return formattedString;
+      } else {
+        logger.debug(`   ⚠️ No cached cookies available`);
+      }
+    } catch (e) {
+      logger.debug(`   ❌ Could not get cached cookies: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    
+    logger.debug(`   📄 Returning input token unchanged`);
+    return sapToken;
+  }
+
+  /**
+   * Get Coveo bearer token using direct API calls (faster, more reliable)
+   * Based on network analysis - makes the exact same calls as the browser
+   */
+  private async getCoveoTokenDirect(sapToken: string): Promise<string> {
+    logger.info('🚀 Attempting direct Coveo token API approach');
+    
+    // Ensure cookies are properly formatted for API calls
+    const formattedCookies = await this.formatCookiesForAPI(sapToken);
+    
+    // Construct knowledge search URL to use as referrer
+    const searchParams = JSON.stringify({
+      q: 'test',
+      tab: 'All',
+      f: { documenttype: ['SAP Note'] }
+    });
+    const referrerUrl = `https://me.sap.com/knowledge/search/${encodeURIComponent(searchParams)}`;
+    
+    // Common headers based on network analysis
+    const commonHeaders = {
+      'Accept': 'application/json, text/javascript, */*; q=0.01',
+      'Accept-Language': 'de',
+      'X-Requested-With': 'XMLHttpRequest',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+      'Referer': referrerUrl,
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+      'Cookie': formattedCookies
+    };
+
+    try {
+      // Enhanced debugging for direct API approach
+      const cookieCount = (formattedCookies.match(/=/g) || []).length;
+      logger.debug(`🔍 ENHANCED DEBUG: Direct API approach details:`);
+      logger.debug(`   🍪 Using ${cookieCount} cookies for direct API`);
+      logger.debug(`   📋 Referrer URL: ${referrerUrl}`);
+      logger.debug(`   🔧 Sample cookie names: ${formattedCookies.split(';').slice(0, 5).map(c => c.split('=')[0].trim()).join(', ')}...`);
+      logger.debug(`   📊 Cookie string length: ${formattedCookies.length}`);
+      logger.debug(`   🌐 Target endpoints:`);
+      logger.debug(`      1. https://me.sap.com/backend/raw/core/Applications/coveo`);
+      logger.debug(`      2. https://me.sap.com/backend/raw/coveo/CoveoToken`);
+      
+      // Step 1: Initialize Coveo application first (required prerequisite)
+      logger.debug('📋 Step 1: Initializing Coveo application...');
+      const appResponse = await fetch('https://me.sap.com/backend/raw/core/Applications/coveo', {
+        method: 'GET',
+        headers: commonHeaders
+      });
+
+      // Enhanced error logging
+      if (!appResponse.ok) {
+        let errorBody = '';
+        try {
+          errorBody = await appResponse.text();
+        } catch (e) {
+          errorBody = 'Could not read error body';
+        }
+        
+        logger.debug(`❌ Direct API Error Details:`);
+        logger.debug(`   Status: ${appResponse.status} ${appResponse.statusText}`);
+        logger.debug(`   Headers: ${JSON.stringify(Object.fromEntries(appResponse.headers.entries()))}`);
+        logger.debug(`   Body: ${errorBody.substring(0, 200)}${errorBody.length > 200 ? '...' : ''}`);
+        
+        throw new Error(`Coveo app initialization failed: ${appResponse.status} ${appResponse.statusText}. Response: ${errorBody.substring(0, 100)}`);
+      }
+
+      const appData = await appResponse.json();
+      logger.debug(`✅ Coveo app initialized: ${JSON.stringify(appData).substring(0, 100)}...`);
+
+      // Step 2: Get Coveo token
+      logger.debug('🔑 Step 2: Fetching Coveo token...');
+      const tokenResponse = await fetch('https://me.sap.com/backend/raw/coveo/CoveoToken', {
+        method: 'GET',
+        headers: commonHeaders
+      });
+
+      if (!tokenResponse.ok) {
+        throw new Error(`Coveo token request failed: ${tokenResponse.status} ${tokenResponse.statusText}`);
+      }
+
+      const tokenData = await tokenResponse.json();
+      
+      if (!tokenData.token) {
+        throw new Error('Token not found in response');
+      }
+
+      logger.info(`✅ Direct API SUCCESS: Retrieved Coveo token (length: ${tokenData.token.length})`);
+      return tokenData.token;
+
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      logger.warn(`❌ Direct API failed: ${errorMsg}`);
+      throw error;
+    }
+  }
+
+  /**
    * Get Coveo bearer token from SAP authentication
-   * The token is dynamically generated and embedded in the SAP search page
+   * Primary method - tries direct API first, falls back to Playwright navigation
    */
   private async getCoveoToken(sapToken: string): Promise<string> {
+    // Method 1: Try direct API calls first (fastest, most reliable)
+    try {
+      return await this.getCoveoTokenDirect(sapToken);
+    } catch (directError) {
+      const directErrorMsg = directError instanceof Error ? directError.message : String(directError);
+      logger.warn(`⚠️ Direct API approach failed: ${directErrorMsg}`);
+      logger.info('🔄 Falling back to Playwright navigation approach...');
+    }
+
+    // Method 2: Fallback to existing Playwright approach
+    return await this.getCoveoTokenWithPlaywright(sapToken);
+  }
+
+  /**
+   * Get Coveo bearer token using Playwright navigation (fallback method)
+   * The token is dynamically generated and embedded in the SAP search page
+   */
+  private async getCoveoTokenWithPlaywright(sapToken: string): Promise<string> {
     logger.debug('🔑 Fetching Coveo bearer token from SAP session using Playwright');
     
     let page: Page | null = null;
@@ -378,6 +530,7 @@ export class SapNotesApiClient {
       // Intercept network requests to capture the Coveo token
       let coveoToken: string | null = null;
       
+      // Enhanced token capture - monitor both Coveo API calls AND token endpoint
       page.on('request', (request) => {
         const authHeader = request.headers()['authorization'];
         if (authHeader && request.url().includes('coveo.com')) {
@@ -385,8 +538,63 @@ export class SapNotesApiClient {
           logger.debug(`🔑 Auth header: ${authHeader.substring(0, 50)}...`);
           if (authHeader.startsWith('Bearer ')) {
             coveoToken = authHeader.replace('Bearer ', '');
-            logger.debug(`🎯 CAPTURED Coveo token (length: ${coveoToken.length})`);
+            logger.debug(`🎯 CAPTURED Coveo token from request header (length: ${coveoToken.length})`);
           }
+        }
+      });
+
+      // Also monitor the direct token endpoint responses with enhanced debugging
+      page.on('response', async (response) => {
+        if (response.url().includes('/backend/raw/coveo/CoveoToken')) {
+          try {
+            logger.debug(`🔍 ENHANCED DEBUG: Detected CoveoToken endpoint response`);
+            logger.debug(`   📊 Status: ${response.status()} ${response.statusText()}`);
+            logger.debug(`   🌐 URL: ${response.url()}`);
+            const headersObj: Record<string, string> = {};
+            for (const [key, value] of Object.entries(response.headers())) {
+              headersObj[key] = value;
+            }
+            logger.debug(`   🔧 Headers: ${JSON.stringify(headersObj)}`);            
+            
+            if (response.ok()) {
+              const responseText = await response.text();
+              logger.debug(`   📄 Raw response body (first 200 chars): ${responseText.substring(0, 200)}...`);
+              
+              try {
+                const tokenData = JSON.parse(responseText);
+                logger.debug(`   🎯 Parsed JSON keys: ${Object.keys(tokenData).join(', ')}`);
+                
+                if (tokenData.token) {
+                  coveoToken = tokenData.token;
+                  logger.debug(`   ✅ SUCCESS: Token extracted (length: ${tokenData.token.length})`);
+                  logger.debug(`   🔑 Token preview: ${tokenData.token.substring(0, 20)}...${tokenData.token.substring(tokenData.token.length - 20)}`);
+                  
+                  // Log additional metadata
+                  if (tokenData.organizationId) {
+                    logger.debug(`   🏢 Organization ID: ${tokenData.organizationId}`);
+                  }
+                  if (tokenData.clientId) {
+                    logger.debug(`   👤 Client ID: ${tokenData.clientId}`);
+                  }
+                } else {
+                  logger.debug(`   ❌ Token field missing from response`);
+                }
+              } catch (jsonError) {
+                logger.debug(`   ❌ JSON parsing failed: ${jsonError instanceof Error ? jsonError.message : String(jsonError)}`);
+                logger.debug(`   📄 Response was not valid JSON`);
+              }
+            } else {
+              const errorText = await response.text();
+              logger.debug(`   ❌ Error response body: ${errorText}`);
+            }
+          } catch (error) {
+            logger.debug(`⚠️ Could not process CoveoToken response: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        
+        // Also log other potentially relevant backend calls for debugging
+        if (response.url().includes('/backend/raw/') && response.url().includes('coveo')) {
+          logger.debug(`🔍 Other Coveo-related call: ${response.status()} ${response.url()}`);
         }
       });
 
@@ -413,38 +621,136 @@ export class SapNotesApiClient {
         throw new Error('Session expired - authentication required. Run test:auth to refresh credentials.');
       }
 
-      // Wait for any initialization
-      await page.waitForTimeout(1000);
+      // Enhanced debugging for page state and timing
+      logger.debug(`🔍 ENHANCED DEBUG: Current page analysis:`);
+      logger.debug(`   📄 Title: "${await page.title()}"`);
+      logger.debug(`   🌐 URL: ${page.url()}`);
+      logger.debug(`   🍪 Cookies count: ${(await page.context().cookies()).length}`);
       
-      // Now navigate to knowledge search page with a query to trigger Coveo API
-      const searchParams = JSON.stringify({
-        q: 'test',
-        tab: 'Support',
-        f: {
-          documenttype: ['SAP Note']
-        }
+      // Check if token might already be available in page context
+      const pageState = await page.evaluate(() => {
+        return {
+          hasWindow: typeof window !== 'undefined',
+          hasCoveoInWindow: Object.keys(window).filter(k => k.toLowerCase().includes('cove')).length > 0,
+          windowKeys: Object.keys(window).length,
+          documentReady: document.readyState,
+          locationHref: location.href,
+          userAgent: navigator.userAgent
+        };
       });
-      const searchPageUrl = `https://me.sap.com/knowledge/search/${encodeURIComponent(searchParams)}`;
-      logger.debug(`🌐 Now navigating to knowledge search: ${searchPageUrl.substring(0, 100)}...`);
-
-      try {
-        response = await page.goto(searchPageUrl, {
-          waitUntil: 'load',  // Wait for page load
-          timeout: 30000  // Reduce timeout to 30s
+      
+      logger.debug(`   🔧 Page context: ${JSON.stringify(pageState, null, 2)}`);
+      
+      // Wait for any initialization with enhanced timing logs
+      logger.debug(`⏳ ENHANCED DEBUG: Waiting for page initialization...`);
+      await page.waitForTimeout(2000);
+      
+      // Navigate directly to a search page that will trigger the CoveoToken endpoint
+      // Based on Docker logs, this endpoint gets called during home page initialization
+      logger.debug(`🎯 ENHANCED DEBUG: Looking for Coveo token in current page context...`);
+      
+      // The token endpoint might already have been called during home page load
+      // If not, navigate to search page to trigger it
+      if (!coveoToken) {
+        const searchParams = JSON.stringify({
+          q: 'mm22',  // Use actual search term that works
+          tab: 'All',
+          f: { documenttype: ['SAP Note'] }
         });
-        logger.debug(`📊 Search page loaded: ${response?.status()} - ${page.url().substring(0, 100)}...`);
-      } catch (searchGotoError) {
-        logger.error(`❌ Search page navigation failed: ${searchGotoError instanceof Error ? searchGotoError.message : String(searchGotoError)}`);
-        throw new Error(`Failed to load SAP search page: ${searchGotoError instanceof Error ? searchGotoError.message : 'Navigation timeout'}`);
+        const searchPageUrl = `https://me.sap.com/knowledge/search/${encodeURIComponent(searchParams)}`;
+        logger.debug(`🌐 Navigating to knowledge search to trigger CoveoToken: ${searchPageUrl.substring(0, 100)}...`);
+
+        try {
+          response = await page.goto(searchPageUrl, {
+            waitUntil: 'networkidle',  // Wait for network to settle
+            timeout: 45000  // Increase timeout for Docker
+          });
+          logger.debug(`📊 Search page loaded: ${response?.status()} - ${page.url().substring(0, 100)}...`);
+        } catch (searchGotoError) {
+          logger.warn(`⚠️ Search page navigation had issues: ${searchGotoError instanceof Error ? searchGotoError.message : String(searchGotoError)}`);
+          // Continue anyway - token might have been captured already
+        }
+
+        // Give more time for all network requests to complete (especially in Docker)
+        logger.debug(`⏳ Waiting for network activity and token generation...`);
+        await page.waitForTimeout(5000);
+      }
+      
+      logger.debug(`🔍 Final token capture status: ${coveoToken ? 'YES' : 'NO'}`);
+
+      // Try direct API calls from within the browser context (hybrid approach)
+      if (!coveoToken) {
+        logger.debug('🔧 Attempting hybrid approach: direct API calls from browser context');
+        
+        try {
+          const browserToken = await page.evaluate(async () => {
+            try {
+              console.log('🔧 Browser Context: Starting direct API calls...');
+              
+              // Step 1: Initialize Coveo application
+              console.log('📋 Browser Context: Calling /backend/raw/core/Applications/coveo...');
+              const appResponse = await fetch('/backend/raw/core/Applications/coveo', {
+                method: 'GET',
+                headers: {
+                  'Accept': 'application/json, text/javascript, */*; q=0.01',
+                  'X-Requested-With': 'XMLHttpRequest'
+                },
+                credentials: 'include'
+              });
+              
+              console.log(`📊 Browser Context: App response - ${appResponse.status} ${appResponse.statusText}`);
+              
+              if (appResponse.ok) {
+                const appData = await appResponse.json();
+                console.log(`✅ Browser Context: App initialized - ${JSON.stringify(appData).substring(0, 100)}...`);
+                
+                // Step 2: Get Coveo token
+                console.log('🔑 Browser Context: Calling /backend/raw/coveo/CoveoToken...');
+                const tokenResponse = await fetch('/backend/raw/coveo/CoveoToken', {
+                  method: 'GET', 
+                  headers: {
+                    'Accept': 'application/json, text/javascript, */*; q=0.01',
+                    'X-Requested-With': 'XMLHttpRequest'
+                  },
+                  credentials: 'include'
+                });
+                
+                console.log(`📊 Browser Context: Token response - ${tokenResponse.status} ${tokenResponse.statusText}`);
+                
+                if (tokenResponse.ok) {
+                  const tokenData = await tokenResponse.json();
+                  console.log(`🎯 Browser Context: Token data keys - ${Object.keys(tokenData).join(', ')}`);
+                  console.log(`🔑 Browser Context: Token found - ${tokenData.token ? 'YES' : 'NO'} (length: ${tokenData.token?.length || 0})`);
+                  return tokenData.token || null;
+                } else {
+                  const errorText = await tokenResponse.text();
+                  console.log(`❌ Browser Context: Token request failed - ${errorText}`);
+                }
+              } else {
+                const errorText = await appResponse.text();
+                console.log(`❌ Browser Context: App request failed - ${errorText}`);
+              }
+              return null;
+            } catch (error) {
+              console.log(`❌ Browser Context: Exception - ${error instanceof Error ? error.message : String(error)}`);
+              return null;
+            }
+          });
+          
+          if (browserToken) {
+            coveoToken = browserToken;
+            logger.debug(`🎯 CAPTURED Coveo token via browser context API (length: ${browserToken.length})`);
+          } else {
+            logger.debug('⚠️ Browser context API calls did not return token');
+          }
+        } catch (error) {
+          logger.debug(`⚠️ Browser context API approach failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
 
-      // Wait for Coveo API call to complete
-      await page.waitForTimeout(2000);
-      logger.debug(`🔍 Coveo token captured from network: ${coveoToken ? 'YES' : 'NO'}`);
-
-      // Try to extract token from page JavaScript context
+      // Fallback: Try to extract token from page JavaScript context
       if (!coveoToken) {
-        logger.debug('🔍 Attempting to extract Coveo token from page JavaScript');
+        logger.debug('🔍 Final fallback: Attempting to extract Coveo token from page JavaScript');
         
         const tokenData = await page.evaluate(() => {
           // Look for Coveo token in window object
