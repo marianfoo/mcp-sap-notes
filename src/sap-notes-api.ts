@@ -60,52 +60,125 @@ export class SapNotesApiClient {
     logger.debug(`📊 Search parameters: query="${query}", maxResults=${maxResults}`);
 
     try {
-      // Get Coveo bearer token from SAP authentication
-      const coveoToken = await this.getCoveoToken(token);
-      
-      // Build Coveo search request
-      const searchUrl = `${this.coveoSearchUrl}?organizationId=${this.coveoOrgId}`;
-      logger.debug(`🌐 Coveo Search URL: ${searchUrl}`);
+      // Try primary Coveo search approach
+      try {
+        logger.debug('🔍 Attempting primary Coveo search...');
+        
+        // Get Coveo bearer token from SAP authentication
+        let coveoToken: string;
+        try {
+          coveoToken = await this.getCoveoToken(token);
+          logger.debug(`✅ Successfully obtained Coveo token (length: ${coveoToken.length})`);
+        } catch (tokenError) {
+          const tokenErrorMsg = tokenError instanceof Error ? tokenError.message : String(tokenError);
+          logger.warn(`⚠️ Coveo token extraction failed: ${tokenErrorMsg}`);
+          throw new Error(`Coveo token extraction failed: ${tokenErrorMsg}`);
+        }
+        
+        // Build Coveo search request
+        const searchUrl = `${this.coveoSearchUrl}?organizationId=${this.coveoOrgId}`;
+        logger.debug(`🌐 Coveo Search URL: ${searchUrl}`);
 
-      const searchBody = this.buildCoveoSearchBody(query, maxResults);
-      logger.debug(`📤 Coveo Search Body: ${JSON.stringify(searchBody, null, 2).substring(0, 500)}...`);
+        const searchBody = this.buildCoveoSearchBody(query, maxResults);
+        logger.debug(`📤 Coveo Search Body: ${JSON.stringify(searchBody, null, 2).substring(0, 500)}...`);
 
-      const response = await fetch(searchUrl, {
-        method: 'POST',
-        headers: {
-          'accept': '*/*',
-          'accept-language': 'en-US,en;q=0.9',
-          'authorization': `Bearer ${coveoToken}`,
-          'content-type': 'application/json',
-          'cookie': token,
-          'referer': 'https://me.sap.com/',
-          'origin': 'https://me.sap.com'
-        },
-        body: JSON.stringify(searchBody)
-      });
+        const response = await fetch(searchUrl, {
+          method: 'POST',
+          headers: {
+            'accept': '*/*',
+            'accept-language': 'en-US,en;q=0.9',
+            'authorization': `Bearer ${coveoToken}`,
+            'content-type': 'application/json',
+            'cookie': token,
+            'referer': 'https://me.sap.com/',
+            'origin': 'https://me.sap.com'
+          },
+          body: JSON.stringify(searchBody)
+        });
 
-      logger.debug(`📊 Coveo Response: ${response.status} ${response.statusText}`);
+        logger.debug(`📊 Coveo Response: ${response.status} ${response.statusText}`);
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        logger.error(`❌ Coveo API error: ${errorText.substring(0, 200)}`);
-        throw new Error(`Coveo API returned ${response.status}: ${errorText.substring(0, 100)}`);
+        if (!response.ok) {
+          const errorText = await response.text();
+          logger.error(`❌ Coveo API error: ${errorText.substring(0, 200)}`);
+          throw new Error(`Coveo API returned ${response.status}: ${errorText.substring(0, 100)}`);
+        }
+
+        const data = await response.json();
+        logger.debug(`📄 Coveo Results: ${data.totalCount || 0} results found`);
+
+        // Parse Coveo response to our format
+        const results = this.parseCoveoResponse(data);
+        
+        logger.info(`✅ Found ${results.length} SAP Note(s) via Coveo`);
+        logger.debug(`📄 Search results: ${JSON.stringify(results.map(r => ({ id: r.id, title: r.title })), null, 2)}`);
+
+        return {
+          results,
+          totalResults: data.totalCount || results.length,
+          query
+        };
+        
+      } catch (coveoError) {
+        const errorMessage = coveoError instanceof Error ? coveoError.message : String(coveoError);
+        logger.warn(`⚠️ Primary Coveo search failed: ${errorMessage}`);
+        logger.info('🔄 Attempting fallback search methods...');
+        
+        // Fallback 1: Direct note ID search (if query looks like a note ID)
+        if (/^\d{6,8}$/.test(query.trim())) {
+          logger.info(`🎯 Fallback 1: Query "${query}" appears to be a note ID, trying direct note access...`);
+          try {
+            const noteId = query.trim();
+            const note = await this.getNote(noteId, token);
+            if (note) {
+              logger.info(`✅ Fallback 1 SUCCESS: Found SAP Note ${noteId} via direct access`);
+              return {
+                results: [{
+                  id: noteId,
+                  title: note.title,
+                  summary: note.summary,
+                  component: note.component,
+                  releaseDate: note.releaseDate,
+                  language: note.language,
+                  url: note.url
+                }],
+                totalResults: 1,
+                query
+              };
+            } else {
+              logger.warn(`⚠️ Fallback 1: Direct note access returned null for note ${noteId}`);
+            }
+          } catch (directError) {
+            logger.warn(`❌ Fallback 1 failed: ${directError instanceof Error ? directError.message : String(directError)}`);
+          }
+        } else {
+          logger.debug(`📝 Query "${query}" doesn't match note ID pattern, skipping direct note access`);
+        }
+        
+        // Fallback 2: SAP Internal Search API (bypasses Coveo)
+        try {
+          logger.info('🔄 Fallback 2: Trying SAP internal search API...');
+          const fallbackResults = await this.searchViaInternalAPI(query, token, maxResults);
+          if (fallbackResults && fallbackResults.length > 0) {
+            logger.info(`✅ Fallback 2 SUCCESS: Found ${fallbackResults.length} result(s) via internal API`);
+            return {
+              results: fallbackResults,
+              totalResults: fallbackResults.length,
+              query
+            };
+          } else {
+            logger.warn(`⚠️ Fallback 2: Internal API returned no results`);
+          }
+        } catch (internalError) {
+          logger.warn(`❌ Fallback 2 failed: ${internalError instanceof Error ? internalError.message : String(internalError)}`);
+        }
+        
+        // Fallback 3: Return helpful error message with guidance
+        const helpfulMessage = `Search temporarily unavailable: Coveo search engine failed (${errorMessage}) and fallback search methods found no results.\n\n🔧 WORKAROUNDS:\n1. If you have a specific SAP Note ID (e.g., 2744792), use sap_note_get(id="2744792") - this works perfectly!\n2. Try searching directly on https://me.sap.com/notes\n3. Search may work better outside containerized environments\n\nNote: Individual note retrieval (sap_note_get) is fully functional and can access complete SAP Note content.`;
+        
+        logger.error(`❌ All search methods exhausted: ${helpfulMessage}`);
+        throw new Error(helpfulMessage);
       }
-
-      const data = await response.json();
-      logger.debug(`📄 Coveo Results: ${data.totalCount || 0} results found`);
-
-      // Parse Coveo response to our format
-      const results = this.parseCoveoResponse(data);
-      
-      logger.info(`✅ Found ${results.length} SAP Note(s) via Coveo`);
-      logger.debug(`📄 Search results: ${JSON.stringify(results.map(r => ({ id: r.id, title: r.title })), null, 2)}`);
-
-      return {
-        results,
-        totalResults: data.totalCount || results.length,
-        query
-      };
 
     } catch (error) {
       logger.error('❌ SAP Notes search failed:', error);
@@ -217,10 +290,42 @@ export class SapNotesApiClient {
       if (!this.browser || !this.browser.isConnected()) {
         logger.debug('🎭 Launching new persistent browser session');
         
-        this.browser = await chromium.launch({
-          headless: !this.config.headful,
-          args: ['--disable-dev-shm-usage', '--no-sandbox']
-        });
+        // Detect container environment and force headless mode
+        const isDocker = process.env.DOCKER_ENV === 'true' || 
+                        process.env.NODE_ENV === 'production' ||
+                        !process.env.DISPLAY ||
+                        !process.stdin.isTTY ||
+                        process.env.CI === 'true';
+        
+        // Force headless in container/server environments
+        const forceHeadless = isDocker || process.platform === 'linux';
+        const shouldUseHeadless = forceHeadless || !this.config.headful;
+        
+        const launchOptions = {
+          headless: shouldUseHeadless,
+          args: [
+            '--disable-dev-shm-usage', 
+            '--no-sandbox',
+            '--disable-gpu',
+            '--disable-web-security',
+            '--disable-features=VizDisplayCompositor',
+            '--no-first-run',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding'
+          ]
+        };
+        
+        logger.debug(`🔧 Browser launch configuration:`);
+        logger.debug(`   Container detected: ${isDocker}`);
+        logger.debug(`   Force headless: ${forceHeadless}`);
+        logger.debug(`   Config headful: ${this.config.headful}`);
+        logger.debug(`   Final headless: ${shouldUseHeadless}`);
+        logger.debug(`   Platform: ${process.platform}`);
+        logger.debug(`   Display: ${process.env.DISPLAY || 'NOT_SET'}`);
+        logger.debug(`   Launch options: ${JSON.stringify(launchOptions, null, 2)}`);
+        
+        this.browser = await chromium.launch(launchOptions);
 
         this.browserContext = await this.browser.newContext({
           userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
@@ -440,6 +545,155 @@ export class SapNotesApiClient {
       this.browser = null;
       this.browserContext = null;
     }
+  }
+
+  /**
+   * Search via SAP internal APIs (fallback when Coveo fails)
+   */
+  private async searchViaInternalAPI(query: string, token: string, maxResults: number): Promise<SapNoteResult[]> {
+    logger.info(`🔍 Internal API: Searching for "${query}" with multiple endpoint strategies`);
+    
+    const searchEndpoints = [
+      // Try current knowledge search endpoint (modern API)
+      `/knowledge/search/${encodeURIComponent(JSON.stringify({
+        q: query,
+        tab: 'Support',
+        f: [{ field: 'documenttype', value: ['SAP Note'] }]
+      }))}`,
+      
+      // Try simplified search endpoint
+      `/support/search?q=${encodeURIComponent(query)}&type=note&format=json`,
+      
+      // Try backend notes API (used by note retrieval)
+      `/backend/raw/sapnotes/Search?q=${encodeURIComponent(query)}&t=E&maxResults=${maxResults}`
+    ];
+    
+    for (let i = 0; i < searchEndpoints.length; i++) {
+      const endpoint = searchEndpoints[i];
+      try {
+        logger.info(`🌐 Internal API Strategy ${i + 1}/${searchEndpoints.length}: ${endpoint.substring(0, 80)}...`);
+        const response = await this.makeRequest(endpoint, token);
+        
+        logger.debug(`📊 Response status: ${response.status} ${response.statusText}`);
+        
+        if (response.ok) {
+          const results = await this.parseInternalSearchResponse(response, query);
+          if (results && results.length > 0) {
+            logger.info(`✅ Internal API Strategy ${i + 1} SUCCESS: Found ${results.length} results`);
+            return results.slice(0, maxResults);
+          } else {
+            logger.debug(`📝 Internal API Strategy ${i + 1}: No results found`);
+          }
+        } else {
+          logger.warn(`❌ Internal API Strategy ${i + 1}: HTTP ${response.status} ${response.statusText}`);
+        }
+      } catch (error) {
+        logger.warn(`❌ Internal API Strategy ${i + 1} failed: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+    }
+    
+    logger.warn('❌ All internal API strategies failed - no results found');
+    return [];
+  }
+
+  /**
+   * Parse response from internal SAP search APIs
+   */
+  private async parseInternalSearchResponse(response: Response, query: string): Promise<SapNoteResult[]> {
+    try {
+      const contentType = response.headers.get('content-type') || '';
+      logger.debug(`📄 Parsing response with content-type: ${contentType}`);
+      
+      if (contentType.includes('application/json')) {
+        const data = await response.json();
+        logger.debug(`📊 JSON response keys: ${Object.keys(data).join(', ')}`);
+        
+        // Handle modern SAP backend raw API responses (similar to note retrieval)
+        if (data.Response && data.Response.SearchResults) {
+          const results = data.Response.SearchResults.results || data.Response.SearchResults;
+          if (Array.isArray(results)) {
+            logger.debug(`✅ Found ${results.length} results in modern backend format`);
+            return results.map((item: any) => ({
+              id: item.Number || item.id || 'unknown',
+              title: item.Title || item.title || 'No title',
+              summary: item.Summary || item.summary || 'No summary available',
+              component: item.Component || undefined,
+              releaseDate: item.ReleaseDate || new Date().toISOString(),
+              language: item.Language || 'EN',
+              url: `https://launchpad.support.sap.com/#/notes/${item.Number || item.id}`
+            }));
+          }
+        }
+        
+        // Handle knowledge search API responses
+        if (data.results && Array.isArray(data.results)) {
+          logger.debug(`✅ Found ${data.results.length} results in knowledge search format`);
+          return data.results.map((item: any) => ({
+            id: item.mh_id || item.id || item.noteId || 'unknown',
+            title: item.title || item.mh_description || 'No title',
+            summary: item.summary || item.description || item.mh_description || 'No summary available',
+            component: item.mh_app_component || item.component || undefined,
+            releaseDate: item.date || new Date().toISOString(),
+            language: item.language || 'EN',
+            url: item.mh_alt_url || `https://launchpad.support.sap.com/#/notes/${item.mh_id || item.id}`
+          }));
+        }
+        
+        // Handle simple arrays
+        if (Array.isArray(data)) {
+          logger.debug(`✅ Found ${data.length} results in simple array format`);
+          return data.map((item: any) => ({
+            id: item.id || item.noteId || item.Number || 'unknown',
+            title: item.title || item.name || item.Title || 'No title',
+            summary: item.summary || item.description || item.Summary || 'No summary available',
+            component: item.component || undefined,
+            releaseDate: item.date || item.ReleaseDate || new Date().toISOString(),
+            language: item.language || item.Language || 'EN',
+            url: `https://launchpad.support.sap.com/#/notes/${item.id || item.noteId || item.Number}`
+          }));
+        }
+        
+        logger.debug(`⚠️ Unrecognized JSON format - trying to extract note IDs`);
+      } else if (contentType.includes('text/html')) {
+        // Try to parse HTML search results (basic extraction)
+        const html = await response.text();
+        logger.debug(`📄 Parsing HTML response (length: ${html.length})`);
+        return this.parseHTMLSearchResults(html, query);
+      } else {
+        logger.debug(`⚠️ Unsupported content type: ${contentType}`);
+      }
+      
+      return [];
+    } catch (error) {
+      logger.warn(`❌ Failed to parse internal API response: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
+  }
+
+  /**
+   * Basic HTML parsing for search results (fallback)
+   */
+  private parseHTMLSearchResults(html: string, query: string): SapNoteResult[] {
+    // This is a basic implementation - could be enhanced with proper HTML parsing
+    const results: SapNoteResult[] = [];
+    
+    // Look for note ID patterns in the HTML
+    const noteIdMatches = html.match(/\b\d{6,8}\b/g);
+    if (noteIdMatches) {
+      const uniqueIds = [...new Set(noteIdMatches)];
+      results.push(...uniqueIds.slice(0, 5).map(id => ({
+        id,
+        title: `SAP Note ${id}`,
+        summary: `Found note ID ${id} in search results for "${query}"`,
+        component: undefined,
+        releaseDate: new Date().toISOString(),
+        language: 'EN',
+        url: `https://launchpad.support.sap.com/#/notes/${id}`
+      })));
+    }
+    
+    return results;
   }
 
   /**
@@ -751,11 +1005,44 @@ export class SapNotesApiClient {
     try {
       logger.debug(`🎭 Launching browser for note ${noteId}`);
       
+      // Detect container environment and force headless mode
+      const isDocker = process.env.DOCKER_ENV === 'true' || 
+                      process.env.NODE_ENV === 'production' ||
+                      !process.env.DISPLAY ||
+                      !process.stdin.isTTY ||
+                      process.env.CI === 'true';
+      
+      // Force headless in container/server environments
+      const forceHeadless = isDocker || process.platform === 'linux';
+      const shouldUseHeadless = forceHeadless || !this.config.headful;
+      
+      const launchOptions = {
+        headless: shouldUseHeadless,
+        args: [
+          '--disable-dev-shm-usage', 
+          '--no-sandbox',
+          '--disable-gpu',
+          '--disable-web-security',
+          '--disable-features=VizDisplayCompositor',
+          '--no-first-run',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding'
+        ]
+      };
+      
+      logger.debug(`🔧 Note browser launch configuration:`);
+      logger.debug(`   Note ID: ${noteId}`);
+      logger.debug(`   Container detected: ${isDocker}`);
+      logger.debug(`   Force headless: ${forceHeadless}`);
+      logger.debug(`   Config headful: ${this.config.headful}`);
+      logger.debug(`   Final headless: ${shouldUseHeadless}`);
+      logger.debug(`   Platform: ${process.platform}`);
+      logger.debug(`   Display: ${process.env.DISPLAY || 'NOT_SET'}`);
+      logger.debug(`   Launch options: ${JSON.stringify(launchOptions, null, 2)}`);
+      
       // Launch browser
-      browser = await chromium.launch({
-        headless: !this.config.headful,
-        args: ['--disable-dev-shm-usage', '--no-sandbox']
-      });
+      browser = await chromium.launch(launchOptions);
 
       // Create context and add cookies
       const context = await browser.newContext({

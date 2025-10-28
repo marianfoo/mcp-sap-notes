@@ -80,11 +80,24 @@ class SapNoteMcpServer {
       workingDir: process.cwd()
     });
 
+    // Detect Docker/container environment
+    const isDocker = process.env.DOCKER_ENV === 'true' || 
+                    process.env.NODE_ENV === 'production' ||
+                    !process.env.DISPLAY ||
+                    !process.stdin.isTTY ||
+                    process.env.CI === 'true';
+    
+    // Force headless in container environments unless explicitly overridden
+    const headful = !isDocker && process.env.HEADFUL === 'true';
+    
+    logger.warn(`🐳 Container detection: ${isDocker}`);
+    logger.warn(`🖥️  Headful mode: ${headful}`);
+    
     return {
       pfxPath: pfxPath,
       pfxPassphrase: process.env.PFX_PASSPHRASE!,
       maxJwtAgeH: parseInt(process.env.MAX_JWT_AGE_H || '12'),
-      headful: process.env.HEADFUL === 'true',
+      headful: headful,
       logLevel: process.env.LOG_LEVEL || 'info'
     };
   }
