@@ -11,6 +11,10 @@
 
 This Model Context Protocol (MCP) server provides direct access to SAP Notes and Knowledge Base articles through Cursor AI. It uses SAP Passport certificate authentication and Playwright browser automation to retrieve actual note content from SAP's systems.
 
+<a href="https://glama.ai/mcp/servers/@marianfoo/mcp-sap-notes">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@marianfoo/mcp-sap-notes/badge" alt="SAP Note Search Server MCP server" />
+</a>
+
 ## ✨ Features
 
 - 🔍 **Direct SAP Note access** - Retrieve full note content and metadata
