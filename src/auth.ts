@@ -519,18 +519,32 @@ export class SapAuthenticator {
         }
       }
       
-      // Check if we're still on a login page or if we need to wait for redirects
-      if (currentUrlStr.includes('login') || currentUrlStr.includes('auth') || pageTitle.toLowerCase().includes('login')) {
-        logger.warn('🔄 Still on login page, waiting for authentication redirect...');
+      // Check if we're still on a login/2FA page or if we need to wait for redirects
+      const isOnAuthPage = currentUrlStr.includes('login') || 
+                           currentUrlStr.includes('auth') || 
+                           currentUrlStr.includes('accounts.sap.com') ||
+                           currentUrlStr.includes('saml2/idp') ||
+                           pageTitle.toLowerCase().includes('login') ||
+                           pageTitle.toLowerCase().includes('two-factor') ||
+                           pageTitle.toLowerCase().includes('authentication');
+      
+      if (isOnAuthPage) {
+        logger.warn('🔄 Still on authentication/2FA page, waiting for completion...');
+        logger.warn('💡 If a browser window is open, please complete the authentication (e.g., enter 2FA code)');
         
-        // Wait for navigation to complete (e.g., after certificate selection)
+        // Wait for navigation away from the auth/2FA page
         try {
-          await this.page.waitForURL(url => !url.toString().includes('login') && !url.toString().includes('auth'), { 
-            timeout: 30000 
+          await this.page.waitForURL(url => {
+            const urlStr = url.toString();
+            return !urlStr.includes('accounts.sap.com') && 
+                   !urlStr.includes('saml2/idp') &&
+                   !urlStr.includes('login');
+          }, { 
+            timeout: 120000 // 2 minutes for user to complete 2FA
           });
           logger.warn('✅ Authentication redirect completed');
         } catch (error) {
-          logger.warn('⚠️ No redirect detected, continuing with current page');
+          logger.warn('⚠️ No redirect detected after 2 minutes, continuing with current page');
         }
       }
       
