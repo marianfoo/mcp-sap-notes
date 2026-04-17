@@ -347,9 +347,6 @@ export class SapNotesApiClient {
 
   /**
    * Fetch detailed correction instructions for a note via the CorrIns OData service.
-   * Uses the snogwscorrins OData V2 service on me.sap.com.
-   * Returns an array of correction entries with affected ABAP objects and prerequisites.
-   * This is an optional enrichment — failures are non-fatal.
    */
   async getCorrectionDetails(
     noteId: string,
@@ -369,14 +366,12 @@ export class SapNotesApiClient {
       }
 
       try {
-        // Fetch correction instructions list for this software component
         const corrInsEntries = await this.fetchCorrInsSet(paddedNoteId, pakId, token);
         if (!corrInsEntries || corrInsEntries.length === 0) {
           logger.debug(`No correction entries found for PakId=${pakId}`);
           continue;
         }
 
-        // For each correction instruction, fetch TADIR (objects) and Prerequisites
         for (const entry of corrInsEntries) {
           const correction: any = {
             softwareComponent: entry.Name || summary.softwareComponent,
@@ -386,7 +381,6 @@ export class SapNotesApiClient {
             sapNotesTitle: entry.SapNotesTitle || '',
           };
 
-          // Fetch TADIR (affected objects) — optional, may fail
           try {
             const tadirEntries = await this.fetchCorrInsNavigation(entry, 'TADIR', token);
             if (tadirEntries && tadirEntries.length > 0) {
@@ -399,7 +393,6 @@ export class SapNotesApiClient {
             logger.debug(`TADIR fetch failed for correction ${entry.Aleid}: ${tadirErr}`);
           }
 
-          // Fetch Prerequisites — optional, may fail
           try {
             const preEntries = await this.fetchCorrInsNavigation(entry, 'Prerequisite', token);
             if (preEntries && preEntries.length > 0) {
@@ -423,9 +416,6 @@ export class SapNotesApiClient {
     return allCorrections;
   }
 
-  /**
-   * Fetch CorrInsSet entries for a note + software component from the OData service.
-   */
   private async fetchCorrInsSet(paddedNoteId: string, pakId: string, token: string): Promise<any[]> {
     const odataUrl = `https://me.sap.com/backend/raw/core/W7LegacyProxyVerticle/odata/svt/snogwscorrins/CorrInsSet?$filter=SapNotesNumber eq '${paddedNoteId}' and PakId eq '${pakId}'&$format=json`;
 
@@ -448,11 +438,7 @@ export class SapNotesApiClient {
     return json?.d?.results || [];
   }
 
-  /**
-   * Fetch a navigation property (TADIR or Prerequisite) for a specific CorrIns entry.
-   */
   private async fetchCorrInsNavigation(entry: any, navProperty: string, token: string): Promise<any[]> {
-    // Build the entity key from the CorrIns entry
     const keyParts = [
       `Aleid='${entry.Aleid}'`,
       `PakId='${entry.PakId}'`,
@@ -481,30 +467,23 @@ export class SapNotesApiClient {
     }
 
     const json = await response.json();
-    // Navigation property might return results array or a single entity
     if (json?.d?.results) return json.d.results;
     if (json?.d) return [json.d];
     return [];
   }
 
-  /**
-   * Format cookies from cache for direct API calls
-   * Ensures proper cookie format for fetch requests
-   */
   private async formatCookiesForAPI(sapToken: string): Promise<string> {
     logger.debug(`🔍 ENHANCED DEBUG: Cookie formatting analysis:`);
     logger.debug(`   📊 Input token length: ${sapToken.length}`);
     logger.debug(`   🔧 Contains '=': ${sapToken.includes('=')}`);
     logger.debug(`   📄 First 50 chars: ${sapToken.substring(0, 50)}...`);
     
-    // If sapToken is already in proper cookie format (contains '='), use as-is
     if (sapToken.includes('=')) {
       const cookieCount = (sapToken.match(/=/g) || []).length;
       logger.debug(`   ✅ Using input token as-is (${cookieCount} cookies detected)`);
       return sapToken;
     }
     
-    // Otherwise, try to get cookies from cache and format them
     try {
       logger.debug(`   🔍 Token not in cookie format, checking cache...`);
       const cookies = await this.getCachedCookies();
@@ -525,18 +504,12 @@ export class SapNotesApiClient {
     return sapToken;
   }
 
-  /**
-   * Get Coveo bearer token using direct API calls (faster, more reliable)
-   * Based on network analysis - makes the exact same calls as the browser
-   */
   private async getCoveoTokenDirect(sapToken: string): Promise<string> {
     logger.info('🚀 Attempting direct Coveo token API approach');
 
-    // Get cookies filtered for me.sap.com domain only
     const meSapCookies = await this.getCookiesForDomain('me.sap.com');
 
     if (meSapCookies.length === 0) {
-      // Fall back to token string
       const formattedCookies = await this.formatCookiesForAPI(sapToken);
       if (!formattedCookies || formattedCookies.length < 50) {
         throw new Error('No valid cookies available for direct API');
@@ -549,7 +522,6 @@ export class SapNotesApiClient {
 
     logger.debug(`Direct API: using ${meSapCookies.length} domain-filtered cookies`);
 
-    // Common headers based on network analysis
     const commonHeaders: Record<string, string> = {
       'Accept': 'application/json, text/javascript, */*; q=0.01',
       'Accept-Language': 'en-US,en;q=0.9',
@@ -560,7 +532,6 @@ export class SapNotesApiClient {
       'Cookie': formattedCookies
     };
 
-    // Add CSRF token from cookies if available
     const csrfCookie = meSapCookies.find(c => c.name.toLowerCase().includes('csrf') || c.name.toLowerCase().includes('xsrf'));
     if (csrfCookie) {
       commonHeaders['X-Csrf-Token'] = csrfCookie.value;
@@ -569,7 +540,6 @@ export class SapNotesApiClient {
     }
 
     try {
-      // Step 1: Initialize Coveo application first (required prerequisite)
       logger.debug('Step 1: Initializing Coveo application...');
       const appResponse = await fetch('https://me.sap.com/backend/raw/core/Applications/coveo', {
         method: 'GET',
@@ -577,7 +547,6 @@ export class SapNotesApiClient {
         redirect: 'follow'
       });
 
-      // Enhanced error logging
       if (!appResponse.ok) {
         let errorBody = '';
         try {
@@ -597,7 +566,6 @@ export class SapNotesApiClient {
       const appData = await appResponse.json();
       logger.debug(`✅ Coveo app initialized: ${JSON.stringify(appData).substring(0, 100)}...`);
 
-      // Step 2: Get Coveo token
       logger.debug('🔑 Step 2: Fetching Coveo token...');
       const tokenResponse = await fetch('https://me.sap.com/backend/raw/coveo/CoveoToken', {
         method: 'GET',
@@ -624,12 +592,7 @@ export class SapNotesApiClient {
     }
   }
 
-  /**
-   * Get Coveo bearer token from SAP authentication.
-   * Uses cached token if available, otherwise fetches via direct API or Playwright fallback.
-   */
   private async getCoveoToken(sapToken: string): Promise<string> {
-    // Check cache first
     if (this.coveoTokenCache && Date.now() < this.coveoTokenCache.expiresAt) {
       logger.debug('Using cached Coveo token');
       return this.coveoTokenCache.token;
@@ -637,18 +600,14 @@ export class SapNotesApiClient {
 
     let token: string;
 
-    // Method 1: Try direct API calls first (fastest)
     try {
       token = await this.getCoveoTokenDirect(sapToken);
     } catch (directError) {
       const directErrorMsg = directError instanceof Error ? directError.message : String(directError);
       logger.warn(`Direct Coveo API failed: ${directErrorMsg}, falling back to Playwright...`);
-
-      // Method 2: Fallback to Playwright navigation
       token = await this.getCoveoTokenWithPlaywright(sapToken);
     }
 
-    // Cache the token
     this.coveoTokenCache = {
       token,
       expiresAt: Date.now() + this.COVEO_TOKEN_TTL
@@ -659,7 +618,6 @@ export class SapNotesApiClient {
 
   /**
    * Get Coveo bearer token using Playwright navigation (fallback method)
-   * The token is dynamically generated and embedded in the SAP search page
    */
   private async getCoveoTokenWithPlaywright(sapToken: string): Promise<string> {
     logger.debug('Fetching Coveo bearer token via Playwright');
@@ -667,12 +625,17 @@ export class SapNotesApiClient {
     let page!: Page;
 
     try {
-      // Use shared persistent browser (handles launch, cookies, idle timeout)
-      await this.ensurePersistentBrowser(sapToken);
+      // FIX: Siempre cerrar browser previo para evitar browserContext cerrado entre procesos de Claude Desktop
+      if (this.browser) {
+        logger.debug('Closing previous browser instance before creating fresh one');
+        await this.browser.close().catch(() => {});
+        this.browser = null;
+        this.browserContext = null;
+      }
 
+      await this.ensurePersistentBrowser(sapToken);
       page = await this.browserContext!.newPage();
 
-      // Set up response listener to detect redirects to login pages
       let wasRedirectedToLogin = false;
       page.on('response', (response) => {
         const url = response.url();
@@ -682,10 +645,8 @@ export class SapNotesApiClient {
         }
       });
 
-      // Intercept network requests to capture the Coveo token
       let coveoToken: string | null = null;
       
-      // Enhanced token capture - monitor both Coveo API calls AND token endpoint
       page.on('request', (request) => {
         const authHeader = request.headers()['authorization'];
         if (authHeader && request.url().includes('coveo.com')) {
@@ -698,7 +659,6 @@ export class SapNotesApiClient {
         }
       });
 
-      // Also monitor the direct token endpoint responses with enhanced debugging
       page.on('response', async (response) => {
         if (response.url().includes('/backend/raw/coveo/CoveoToken')) {
           try {
@@ -722,21 +682,9 @@ export class SapNotesApiClient {
                 if (tokenData.token) {
                   coveoToken = tokenData.token;
                   logger.debug(`   ✅ SUCCESS: Token extracted (length: ${tokenData.token.length})`);
-                  logger.debug(`   🔑 Token preview: ${tokenData.token.substring(0, 20)}...${tokenData.token.substring(tokenData.token.length - 20)}`);
-                  
-                  // Log additional metadata
-                  if (tokenData.organizationId) {
-                    logger.debug(`   🏢 Organization ID: ${tokenData.organizationId}`);
-                  }
-                  if (tokenData.clientId) {
-                    logger.debug(`   👤 Client ID: ${tokenData.clientId}`);
-                  }
-                } else {
-                  logger.debug(`   ❌ Token field missing from response`);
                 }
               } catch (jsonError) {
                 logger.debug(`   ❌ JSON parsing failed: ${jsonError instanceof Error ? jsonError.message : String(jsonError)}`);
-                logger.debug(`   📄 Response was not valid JSON`);
               }
             } else {
               const errorText = await response.text();
@@ -747,28 +695,24 @@ export class SapNotesApiClient {
           }
         }
         
-        // Also log other potentially relevant backend calls for debugging
         if (response.url().includes('/backend/raw/') && response.url().includes('coveo')) {
           logger.debug(`🔍 Other Coveo-related call: ${response.status()} ${response.url()}`);
         }
       });
 
-      // First, go to the home page to ensure we're fully authenticated
       logger.debug(`🌐 Navigating to SAP home page first...`);
       let response;
       
       try {
         response = await page.goto('https://me.sap.com/home', {
-          waitUntil: 'load',  // Wait for page load
-          timeout: 30000  // Reduce timeout to 30s
+          waitUntil: 'load',
+          timeout: 30000
         });
         logger.debug(`📊 Home page loaded: ${response?.status()} - ${page.url().substring(0, 100)}...`);
       } catch (gotoError) {
         logger.warn(`⚠️ Home page navigation timeout/error, trying direct search page: ${gotoError instanceof Error ? gotoError.message : String(gotoError)}`);
-        // Continue anyway - maybe direct navigation to search will work
       }
 
-      // Check if we were redirected to login page
       const currentUrl = page.url();
       if (wasRedirectedToLogin || currentUrl.includes('authentication.') || currentUrl.includes('saml/login')) {
         logger.error('❌ Session expired or cookies invalid - redirected to login page');
@@ -776,39 +720,16 @@ export class SapNotesApiClient {
         throw new Error('Session expired - authentication required. Run test:auth to refresh credentials.');
       }
 
-      // Enhanced debugging for page state and timing
       logger.debug(`🔍 ENHANCED DEBUG: Current page analysis:`);
       logger.debug(`   📄 Title: "${await page.title()}"`);
       logger.debug(`   🌐 URL: ${page.url()}`);
       logger.debug(`   🍪 Cookies count: ${(await page.context().cookies()).length}`);
-      
-      // Check if token might already be available in page context
-      const pageState = await page.evaluate(() => {
-        return {
-          hasWindow: typeof window !== 'undefined',
-          hasCoveoInWindow: Object.keys(window).filter(k => k.toLowerCase().includes('cove')).length > 0,
-          windowKeys: Object.keys(window).length,
-          documentReady: document.readyState,
-          locationHref: location.href,
-          userAgent: navigator.userAgent
-        };
-      });
-      
-      logger.debug(`   🔧 Page context: ${JSON.stringify(pageState, null, 2)}`);
-      
-      // Wait for any initialization with enhanced timing logs
-      logger.debug(`⏳ ENHANCED DEBUG: Waiting for page initialization...`);
+
       await page.waitForTimeout(2000);
       
-      // Navigate directly to a search page that will trigger the CoveoToken endpoint
-      // Based on Docker logs, this endpoint gets called during home page initialization
-      logger.debug(`🎯 ENHANCED DEBUG: Looking for Coveo token in current page context...`);
-      
-      // The token endpoint might already have been called during home page load
-      // If not, navigate to search page to trigger it
       if (!coveoToken) {
         const searchParams = JSON.stringify({
-          q: 'mm22',  // Use actual search term that works
+          q: 'mm22',
           tab: 'All',
           f: { documenttype: ['SAP Note'] }
         });
@@ -817,33 +738,25 @@ export class SapNotesApiClient {
 
         try {
           response = await page.goto(searchPageUrl, {
-            waitUntil: 'networkidle',  // Wait for network to settle
-            timeout: 45000  // Increase timeout for Docker
+            waitUntil: 'networkidle',
+            timeout: 45000
           });
           logger.debug(`📊 Search page loaded: ${response?.status()} - ${page.url().substring(0, 100)}...`);
         } catch (searchGotoError) {
           logger.warn(`⚠️ Search page navigation had issues: ${searchGotoError instanceof Error ? searchGotoError.message : String(searchGotoError)}`);
-          // Continue anyway - token might have been captured already
         }
 
-        // Give more time for all network requests to complete (especially in Docker)
-        logger.debug(`⏳ Waiting for network activity and token generation...`);
         await page.waitForTimeout(5000);
       }
       
       logger.debug(`🔍 Final token capture status: ${coveoToken ? 'YES' : 'NO'}`);
 
-      // Try direct API calls from within the browser context (hybrid approach)
       if (!coveoToken) {
         logger.debug('🔧 Attempting hybrid approach: direct API calls from browser context');
         
         try {
           const browserToken = await page.evaluate(async () => {
             try {
-              console.log('🔧 Browser Context: Starting direct API calls...');
-              
-              // Step 1: Initialize Coveo application
-              console.log('📋 Browser Context: Calling /backend/raw/core/Applications/coveo...');
               const appResponse = await fetch('/backend/raw/core/Applications/coveo', {
                 method: 'GET',
                 headers: {
@@ -853,14 +766,9 @@ export class SapNotesApiClient {
                 credentials: 'include'
               });
               
-              console.log(`📊 Browser Context: App response - ${appResponse.status} ${appResponse.statusText}`);
-              
               if (appResponse.ok) {
-                const appData = await appResponse.json();
-                console.log(`✅ Browser Context: App initialized - ${JSON.stringify(appData).substring(0, 100)}...`);
+                await appResponse.json();
                 
-                // Step 2: Get Coveo token
-                console.log('🔑 Browser Context: Calling /backend/raw/coveo/CoveoToken...');
                 const tokenResponse = await fetch('/backend/raw/coveo/CoveoToken', {
                   method: 'GET', 
                   headers: {
@@ -870,24 +778,13 @@ export class SapNotesApiClient {
                   credentials: 'include'
                 });
                 
-                console.log(`📊 Browser Context: Token response - ${tokenResponse.status} ${tokenResponse.statusText}`);
-                
                 if (tokenResponse.ok) {
                   const tokenData = await tokenResponse.json();
-                  console.log(`🎯 Browser Context: Token data keys - ${Object.keys(tokenData).join(', ')}`);
-                  console.log(`🔑 Browser Context: Token found - ${tokenData.token ? 'YES' : 'NO'} (length: ${tokenData.token?.length || 0})`);
                   return tokenData.token || null;
-                } else {
-                  const errorText = await tokenResponse.text();
-                  console.log(`❌ Browser Context: Token request failed - ${errorText}`);
                 }
-              } else {
-                const errorText = await appResponse.text();
-                console.log(`❌ Browser Context: App request failed - ${errorText}`);
               }
               return null;
             } catch (error) {
-              console.log(`❌ Browser Context: Exception - ${error instanceof Error ? error.message : String(error)}`);
               return null;
             }
           });
@@ -895,20 +792,16 @@ export class SapNotesApiClient {
           if (browserToken) {
             coveoToken = browserToken;
             logger.debug(`🎯 CAPTURED Coveo token via browser context API (length: ${browserToken.length})`);
-          } else {
-            logger.debug('⚠️ Browser context API calls did not return token');
           }
         } catch (error) {
           logger.debug(`⚠️ Browser context API approach failed: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
 
-      // Fallback: Try to extract token from page JavaScript context
       if (!coveoToken) {
         logger.debug('🔍 Final fallback: Attempting to extract Coveo token from page JavaScript');
         
         const tokenData = await page.evaluate(() => {
-          // Look for Coveo token in window object
           const win = window as any;
           const findings: any = {
             token: null,
@@ -916,41 +809,18 @@ export class SapNotesApiClient {
             windowKeys: Object.keys(win).filter(k => k.toLowerCase().includes('cove')).slice(0, 5)
           };
           
-          // Common places where Coveo token might be stored
-          if (win.coveoToken) {
-            findings.token = win.coveoToken;
-            findings.foundIn = 'window.coveoToken';
-            return findings;
-          }
-          if (win.Coveo?.SearchEndpoint?.options?.accessToken) {
-            findings.token = win.Coveo.SearchEndpoint.options.accessToken;
-            findings.foundIn = 'window.Coveo.SearchEndpoint.options.accessToken';
-            return findings;
-          }
-          if (win.__COVEO_TOKEN__) {
-            findings.token = win.__COVEO_TOKEN__;
-            findings.foundIn = 'window.__COVEO_TOKEN__';
-            return findings;
-          }
+          if (win.coveoToken) { findings.token = win.coveoToken; findings.foundIn = 'window.coveoToken'; return findings; }
+          if (win.Coveo?.SearchEndpoint?.options?.accessToken) { findings.token = win.Coveo.SearchEndpoint.options.accessToken; findings.foundIn = 'window.Coveo'; return findings; }
+          if (win.__COVEO_TOKEN__) { findings.token = win.__COVEO_TOKEN__; findings.foundIn = 'window.__COVEO_TOKEN__'; return findings; }
           
-          // Try to find in localStorage
           try {
             const token = localStorage.getItem('coveo_token') || localStorage.getItem('coveoToken');
-            if (token) {
-              findings.token = token;
-              findings.foundIn = 'localStorage';
-              return findings;
-            }
+            if (token) { findings.token = token; findings.foundIn = 'localStorage'; return findings; }
           } catch (e) {}
           
-          // Try to find in sessionStorage
           try {
             const token = sessionStorage.getItem('coveo_token') || sessionStorage.getItem('coveoToken');
-            if (token) {
-              findings.token = token;
-              findings.foundIn = 'sessionStorage';
-              return findings;
-            }
+            if (token) { findings.token = token; findings.foundIn = 'sessionStorage'; return findings; }
           } catch (e) {}
           
           return findings;
@@ -959,8 +829,6 @@ export class SapNotesApiClient {
         if (tokenData.token) {
           coveoToken = tokenData.token;
           logger.debug(`✅ Found Coveo token in: ${tokenData.foundIn}`);
-        } else {
-          logger.debug(`⚠️ Coveo token not found. Window keys with 'cove': ${tokenData.windowKeys.join(', ')}`);
         }
       }
 
@@ -974,7 +842,6 @@ export class SapNotesApiClient {
     } catch (error) {
       logger.error('❌ Failed to get Coveo token:', error);
       
-      // If session expired, throw special error and close browser to force re-auth
       if (error instanceof Error && error.message.includes('Session expired')) {
         logger.warn('🔄 Session expired detected - closing browser to force fresh authentication');
         if (this.browser) {
@@ -987,18 +854,12 @@ export class SapNotesApiClient {
       
       throw new Error(`Failed to get Coveo bearer token: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
-      // Only close the page, keep browser alive for session cookie persistence
       if (page) {
         await page.close().catch(() => {});
       }
-      // DON'T close the browser - we need to keep session cookies alive
-      // Browser will be closed after BROWSER_IDLE_TIMEOUT or on explicit cleanup
     }
   }
   
-  /**
-   * Cleanup method - call this when shutting down the server
-   */
   async cleanup(): Promise<void> {
     if (this.browser) {
       logger.debug('🧹 Closing persistent browser session');
@@ -1008,24 +869,16 @@ export class SapNotesApiClient {
     }
   }
 
-  /**
-   * Search via SAP internal APIs (fallback when Coveo fails)
-   */
   private async searchViaInternalAPI(query: string, token: string, maxResults: number): Promise<SapNoteResult[]> {
     logger.info(`🔍 Internal API: Searching for "${query}" with multiple endpoint strategies`);
     
     const searchEndpoints = [
-      // Try current knowledge search endpoint (modern API)
       `/knowledge/search/${encodeURIComponent(JSON.stringify({
         q: query,
         tab: 'Support',
         f: [{ field: 'documenttype', value: ['SAP Note'] }]
       }))}`,
-      
-      // Try simplified search endpoint
       `/support/search?q=${encodeURIComponent(query)}&type=note&format=json`,
-      
-      // Try backend notes API (used by note retrieval)
       `/backend/raw/sapnotes/Search?q=${encodeURIComponent(query)}&t=E&maxResults=${maxResults}`
     ];
     
@@ -1042,8 +895,6 @@ export class SapNotesApiClient {
           if (results && results.length > 0) {
             logger.info(`✅ Internal API Strategy ${i + 1} SUCCESS: Found ${results.length} results`);
             return results.slice(0, maxResults);
-          } else {
-            logger.debug(`📝 Internal API Strategy ${i + 1}: No results found`);
           }
         } else {
           logger.warn(`❌ Internal API Strategy ${i + 1}: HTTP ${response.status} ${response.statusText}`);
@@ -1058,9 +909,6 @@ export class SapNotesApiClient {
     return [];
   }
 
-  /**
-   * Parse response from internal SAP search APIs
-   */
   private async parseInternalSearchResponse(response: Response, query: string): Promise<SapNoteResult[]> {
     try {
       const contentType = response.headers.get('content-type') || '';
@@ -1070,11 +918,9 @@ export class SapNotesApiClient {
         const data = await response.json();
         logger.debug(`📊 JSON response keys: ${Object.keys(data).join(', ')}`);
         
-        // Handle modern SAP backend raw API responses (similar to note retrieval)
         if (data.Response && data.Response.SearchResults) {
           const results = data.Response.SearchResults.results || data.Response.SearchResults;
           if (Array.isArray(results)) {
-            logger.debug(`✅ Found ${results.length} results in modern backend format`);
             return results.map((item: any) => ({
               id: item.Number || item.id || 'unknown',
               title: item.Title || item.title || 'No title',
@@ -1087,9 +933,7 @@ export class SapNotesApiClient {
           }
         }
         
-        // Handle knowledge search API responses
         if (data.results && Array.isArray(data.results)) {
-          logger.debug(`✅ Found ${data.results.length} results in knowledge search format`);
           return data.results.map((item: any) => ({
             id: item.mh_id || item.id || item.noteId || 'unknown',
             title: item.title || item.mh_description || 'No title',
@@ -1101,9 +945,7 @@ export class SapNotesApiClient {
           }));
         }
         
-        // Handle simple arrays
         if (Array.isArray(data)) {
-          logger.debug(`✅ Found ${data.length} results in simple array format`);
           return data.map((item: any) => ({
             id: item.id || item.noteId || item.Number || 'unknown',
             title: item.title || item.name || item.Title || 'No title',
@@ -1114,15 +956,9 @@ export class SapNotesApiClient {
             url: `https://launchpad.support.sap.com/#/notes/${item.id || item.noteId || item.Number}`
           }));
         }
-        
-        logger.debug(`⚠️ Unrecognized JSON format - trying to extract note IDs`);
       } else if (contentType.includes('text/html')) {
-        // Try to parse HTML search results (basic extraction)
         const html = await response.text();
-        logger.debug(`📄 Parsing HTML response (length: ${html.length})`);
         return this.parseHTMLSearchResults(html, query);
-      } else {
-        logger.debug(`⚠️ Unsupported content type: ${contentType}`);
       }
       
       return [];
@@ -1132,14 +968,8 @@ export class SapNotesApiClient {
     }
   }
 
-  /**
-   * Basic HTML parsing for search results (fallback)
-   */
   private parseHTMLSearchResults(html: string, query: string): SapNoteResult[] {
-    // This is a basic implementation - could be enhanced with proper HTML parsing
     const results: SapNoteResult[] = [];
-    
-    // Look for note ID patterns in the HTML
     const noteIdMatches = html.match(/\b\d{6,8}\b/g);
     if (noteIdMatches) {
       const uniqueIds = [...new Set(noteIdMatches)];
@@ -1153,13 +983,9 @@ export class SapNotesApiClient {
         url: `https://launchpad.support.sap.com/#/notes/${id}`
       })));
     }
-    
     return results;
   }
 
-  /**
-   * Build Coveo search request body
-   */
   private buildCoveoSearchBody(query: string, maxResults: number): any {
     return {
       locale: 'en-US',
@@ -1200,9 +1026,6 @@ export class SapNotesApiClient {
     };
   }
 
-  /**
-   * Parse Coveo search response to our SAP Note format
-   */
   private parseCoveoResponse(data: any): SapNoteResult[] {
     const results: SapNoteResult[] = [];
 
@@ -1215,21 +1038,17 @@ export class SapNotesApiClient {
 
     for (const item of data.results) {
       try {
-        // Extract note ID from raw.mh_id (primary) or fallback to parsing
         const noteId = item.raw?.mh_id || 
                       item.raw?.permanentid?.match(/\d{6,8}/)?.[0] || 
                       item.title?.match(/\d{6,8}/)?.[0] ||
                       'unknown';
 
-        // Extract language (Coveo returns array like ["English"])
         const languageArray = item.raw?.language || item.raw?.syslanguage || [];
         const language = Array.isArray(languageArray) ? languageArray[0] : (languageArray || 'EN');
         
-        // Extract component (Coveo returns array, take first element)
         const componentArray = item.raw?.mh_app_component || item.raw?.mh_all_hierarchical_component || [];
         const component = Array.isArray(componentArray) ? componentArray[0] : componentArray;
 
-        // Format release date from timestamp (milliseconds)
         const releaseDate = item.raw?.date ? 
           new Date(item.raw.date).toISOString().split('T')[0] : 
           'Unknown';
@@ -1255,12 +1074,8 @@ export class SapNotesApiClient {
     return results;
   }
 
-  /**
-   * Make HTTP request to SAP API
-   */
   private async makeRequest(endpoint: string, token: string): Promise<Response> {
     const url = `${this.baseUrl}${endpoint}`;
-    
     logger.debug(`🌐 Making request to: ${url}`);
 
     const osUA = (() => {
@@ -1282,7 +1097,7 @@ export class SapNotesApiClient {
     const response = await fetch(url, {
       method: 'GET',
       headers,
-      redirect: 'follow' // Follow redirects to handle SAP authentication flow
+      redirect: 'follow'
     });
 
     logger.debug(`📊 Response: ${response.status} ${response.statusText}`);
@@ -1295,33 +1110,21 @@ export class SapNotesApiClient {
     return response;
   }
 
-
-  /**
-   * Parse note detail response
-   */
   private async parseNoteResponse(response: Response, noteId: string): Promise<SapNoteDetail | null> {
     const responseText = await response.text();
     
-    // Try JSON first
     try {
       const jsonData = JSON.parse(responseText);
-      
       if (jsonData.d) {
         return this.mapToSapNoteDetail(jsonData.d, noteId);
       }
     } catch (jsonError) {
-      // Try HTML parsing
       logger.debug('Note response is not JSON, attempting HTML parsing');
     }
 
-    // Parse HTML for note details
     return this.parseHtmlForNoteDetail(responseText, noteId);
   }
 
-
-  /**
-   * Map OData result to our SapNoteDetail format
-   */
   private mapToSapNoteDetail(item: any, noteId: string): SapNoteDetail {
     return {
       id: item.SapNote || item.Id || item.id || noteId,
@@ -1337,12 +1140,7 @@ export class SapNotesApiClient {
     };
   }
 
-
-  /**
-   * Parse HTML response to extract note details
-   */
   private parseHtmlForNoteDetail(html: string, noteId: string): SapNoteDetail | null {
-    // Extract title if available
     const titleMatch = html.match(/<title>(.*?)<\/title>/i);
     const title = titleMatch ? titleMatch[1].replace(/SAP\s*-?\s*/i, '').trim() : `SAP Note ${noteId}`;
     
@@ -1357,15 +1155,10 @@ export class SapNotesApiClient {
     };
   }
 
-  /**
-   * Make HTTP request to SAP Raw Notes API (me.sap.com)
-   */
   private async makeRawRequest(endpoint: string, token: string): Promise<Response> {
     const url = `${this.rawNotesUrl}${endpoint}`;
-    
     logger.debug(`🌐 Making raw request to: ${url}`);
 
-    // Use browser-like headers (no XMLHttpRequest to avoid 401)
     const osUA2 = (() => {
       const platform = process.platform;
       if (platform === 'win32') return 'Windows NT 10.0; Win64; x64';
@@ -1391,12 +1184,11 @@ export class SapNotesApiClient {
     const response = await fetch(url, {
       method: 'GET',
       headers,
-      redirect: 'follow' // Follow redirects to get to actual content
+      redirect: 'follow'
     });
 
     logger.debug(`📊 Raw response: ${response.status} ${response.statusText} (${response.url})`);
 
-    // For raw notes API, even redirects might be useful
     if (!response.ok && response.status !== 404 && response.status !== 302 && response.status !== 301) {
       const errorText = await response.text();
       throw new Error(`HTTP ${response.status}: ${errorText.substring(0, 200)}`);
@@ -1405,17 +1197,12 @@ export class SapNotesApiClient {
     return response;
   }
 
-
-  /**
-   * Parse raw note response for detailed note information
-   */
   private async parseRawNoteDetail(response: Response, noteId: string): Promise<SapNoteDetail | null> {
     const responseText = await response.text();
     
     try {
       const jsonData = JSON.parse(responseText);
       
-      // Check if we have a valid note response
       if (jsonData && (jsonData.SapNote || jsonData.id || jsonData.noteId)) {
         return {
           id: jsonData.SapNote || jsonData.id || jsonData.noteId || noteId,
@@ -1434,11 +1221,9 @@ export class SapNotesApiClient {
       logger.debug('Raw note response is not JSON, checking for HTML redirect/content');
     }
 
-    // Check if this is a redirect page that indicates the note exists
     if (responseText.includes('fragmentAfterLogin') || responseText.includes('document.cookie')) {
       logger.debug('Detected redirect page, note likely exists but requires browser navigation');
       
-      // If we got a response for a valid note ID, create a basic result
       if (noteId && noteId.match(/^\d{6,8}$/)) {
         return {
           id: noteId,
@@ -1452,16 +1237,10 @@ export class SapNotesApiClient {
       }
     }
 
-    // Fallback to HTML parsing
     return this.parseHtmlForNoteDetail(responseText, noteId);
   }
 
-  /**
-   * Extract enriched metadata from the SAP Note Detail API response.
-   * All extraction is best-effort — if any section fails, the rest still proceeds.
-   */
   private extractEnrichedMetadata(sapNote: any, detail: SapNoteDetail): void {
-    // Validity (software component version ranges)
     try {
       const validityItems = sapNote.Validity?.Items;
       if (Array.isArray(validityItems) && validityItems.length > 0) {
@@ -1473,7 +1252,6 @@ export class SapNotesApiClient {
       }
     } catch (e) { logger.debug(`Validity extraction skipped: ${e}`); }
 
-    // Support Packages
     try {
       const spItems = sapNote.SupportPackage?.Items;
       if (Array.isArray(spItems) && spItems.length > 0) {
@@ -1485,7 +1263,6 @@ export class SapNotesApiClient {
       }
     } catch (e) { logger.debug(`SupportPackage extraction skipped: ${e}`); }
 
-    // Support Package Patches
     try {
       const sppItems = sapNote.SupportPackagePatch?.Items;
       if (Array.isArray(sppItems) && sppItems.length > 0) {
@@ -1497,7 +1274,6 @@ export class SapNotesApiClient {
       }
     } catch (e) { logger.debug(`SupportPackagePatch extraction skipped: ${e}`); }
 
-    // References (referencedBy + referencesTo)
     try {
       const refs: SapNoteDetail['references'] = {};
       const refTo = sapNote.References?.RefTo?.Items;
@@ -1521,7 +1297,6 @@ export class SapNotesApiClient {
       }
     } catch (e) { logger.debug(`References extraction skipped: ${e}`); }
 
-    // Prerequisites
     try {
       const preItems = sapNote.Preconditions?.Items;
       if (Array.isArray(preItems) && preItems.length > 0) {
@@ -1532,7 +1307,6 @@ export class SapNotesApiClient {
       }
     } catch (e) { logger.debug(`Prerequisites extraction skipped: ${e}`); }
 
-    // Side Effects
     try {
       const sideEffects: SapNoteDetail['sideEffects'] = {};
       const causing = sapNote.SideEffects?.SideEffectsCausing?.Items;
@@ -1554,7 +1328,6 @@ export class SapNotesApiClient {
       }
     } catch (e) { logger.debug(`SideEffects extraction skipped: ${e}`); }
 
-    // Correction Instructions summary (from Detail API — just the list, not the OData detail)
     try {
       const corrItems = sapNote.CorrectionInstructions?.Items;
       if (Array.isArray(corrItems) && corrItems.length > 0) {
@@ -1566,7 +1339,6 @@ export class SapNotesApiClient {
       }
     } catch (e) { logger.debug(`CorrectionInstructions summary extraction skipped: ${e}`); }
 
-    // Manual Actions
     try {
       const manualActions = sapNote.ManualActions?.value;
       if (manualActions && typeof manualActions === 'string' && manualActions.trim()) {
@@ -1574,7 +1346,6 @@ export class SapNotesApiClient {
       }
     } catch (e) { logger.debug(`ManualActions extraction skipped: ${e}`); }
 
-    // Corrections Info (summary counts)
     try {
       const corrInfo = sapNote.CorrectionsInfo;
       if (corrInfo) {
@@ -1586,7 +1357,6 @@ export class SapNotesApiClient {
       }
     } catch (e) { logger.debug(`CorrectionsInfo extraction skipped: ${e}`); }
 
-    // Attachments
     try {
       const attachItems = sapNote.Attachments?.Items;
       if (Array.isArray(attachItems) && attachItems.length > 0) {
@@ -1597,7 +1367,6 @@ export class SapNotesApiClient {
       }
     } catch (e) { logger.debug(`Attachments extraction skipped: ${e}`); }
 
-    // Download URL
     try {
       const downloadUrl = sapNote.Actions?.Download?.url;
       if (downloadUrl) {
@@ -1608,12 +1377,10 @@ export class SapNotesApiClient {
 
   /**
    * Ensure the persistent browser is available and has cookies loaded.
-   * Shared by Coveo token Playwright fallback and note retrieval.
    */
   private async ensurePersistentBrowser(token: string): Promise<void> {
     const now = Date.now();
 
-    // Close idle browser
     if (this.browser && (now - this.browserLastUsed > this.BROWSER_IDLE_TIMEOUT)) {
       logger.debug('Closing idle persistent browser');
       await this.browser.close().catch(() => {});
@@ -1626,7 +1393,6 @@ export class SapNotesApiClient {
       return;
     }
 
-    // Detect container environment
     const isDocker = process.env.DOCKER_ENV === 'true' ||
                     process.env.NODE_ENV === 'production' ||
                     !process.env.DISPLAY ||
@@ -1654,7 +1420,6 @@ export class SapNotesApiClient {
       userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36'
     });
 
-    // Add cookies from cached authentication
     const cookies = await this.getCachedCookies();
     if (cookies.length > 0) {
       await this.browserContext.addCookies(cookies);
@@ -1674,11 +1439,17 @@ export class SapNotesApiClient {
     let page!: Page;
 
     try {
-      // Reuse persistent browser instead of launching a new one each call
+      // FIX: Siempre cerrar browser previo para evitar browserContext cerrado entre procesos de Claude Desktop
+      if (this.browser) {
+        logger.debug('Closing previous browser instance before creating fresh one');
+        await this.browser.close().catch(() => {});
+        this.browser = null;
+        this.browserContext = null;
+      }
+
       await this.ensurePersistentBrowser(token);
       page = await this.browserContext!.newPage();
 
-      // Navigate to the raw notes endpoint
       const rawUrl = `https://me.sap.com/backend/raw/sapnotes/Detail?q=${noteId}&t=E&isVTEnabled=false`;
       logger.debug(`🌐 Navigating to: ${rawUrl}`);
 
@@ -1691,10 +1462,8 @@ export class SapNotesApiClient {
         throw new Error(`HTTP ${response?.status()}: Failed to load page`);
       }
 
-      // Wait a bit for any JavaScript to execute
       await page.waitForTimeout(2000);
 
-      // Get page content and check what we received
       const content = await page.content();
       const pageTitle = await page.title();
       const currentUrl = page.url();
@@ -1702,183 +1471,146 @@ export class SapNotesApiClient {
       logger.debug(`📄 Page loaded - Title: "${pageTitle}", URL: ${currentUrl}`);
       logger.debug(`📄 Content length: ${content.length} characters`);
       
-      // Log first few lines of content for debugging
       const contentPreview = content.substring(0, 500);
       logger.debug(`📄 Content preview: ${contentPreview}`);
       
-      // Check if page contains JSON data in body text
       try {
-        // First, try to get text content from body
         const bodyText = await page.locator('body').textContent();
         if (bodyText) {
           logger.debug(`📊 Body text length: ${bodyText.length}`);
           
-          // Try to parse body text as JSON
           const trimmedBodyText = bodyText.trim();
-                     if (trimmedBodyText.startsWith('{') && trimmedBodyText.endsWith('}')) {
-             const jsonData = JSON.parse(trimmedBodyText);
-             logger.info(`🎉 Successfully parsed JSON from page body!`);
-             logger.debug(`📊 JSON keys: ${Object.keys(jsonData).join(', ')}`);
-             
-             // Handle the actual SAP Note API response structure
-             if (jsonData.Response && jsonData.Response.SAPNote) {
-               const sapNote = jsonData.Response.SAPNote;
-               const header = sapNote.Header || {};
+          if (trimmedBodyText.startsWith('{') && trimmedBodyText.endsWith('}')) {
+            const jsonData = JSON.parse(trimmedBodyText);
+            logger.info(`🎉 Successfully parsed JSON from page body!`);
+            logger.debug(`📊 JSON keys: ${Object.keys(jsonData).join(', ')}`);
+            
+            if (jsonData.Response && jsonData.Response.SAPNote) {
+              const sapNote = jsonData.Response.SAPNote;
+              const header = sapNote.Header || {};
 
-               logger.info(`📄 Extracting SAP Note data from API response`);
+              logger.info(`📄 Extracting SAP Note data from API response`);
 
-               const detail: SapNoteDetail = {
-                 id: header.Number?.value || noteId,
-                 title: sapNote.Title?.value || `SAP Note ${noteId}`,
-                 summary: header.Type?.value || 'SAP Knowledge Base Article',
-                 content: sapNote.LongText?.value || 'No content available',
-                 language: header.Language?.value || 'EN',
-                 releaseDate: header.ReleasedOn?.value || 'Unknown',
-                 component: header.SAPComponentKey?.value,
-                 componentText: header.SAPComponentKeyText?.value,
-                 priority: header.Priority?.value,
-                 category: header.Category?.value,
-                 version: header.Version?.value != null ? String(header.Version.value) : undefined,
-                 status: header.Status?.value,
-                 url: `https://launchpad.support.sap.com/#/notes/${noteId}`
-               };
+              const detail: SapNoteDetail = {
+                id: header.Number?.value || noteId,
+                title: sapNote.Title?.value || `SAP Note ${noteId}`,
+                summary: header.Type?.value || 'SAP Knowledge Base Article',
+                content: sapNote.LongText?.value || 'No content available',
+                language: header.Language?.value || 'EN',
+                releaseDate: header.ReleasedOn?.value || 'Unknown',
+                component: header.SAPComponentKey?.value,
+                componentText: header.SAPComponentKeyText?.value,
+                priority: header.Priority?.value,
+                category: header.Category?.value,
+                version: header.Version?.value != null ? String(header.Version.value) : undefined,
+                status: header.Status?.value,
+                url: `https://launchpad.support.sap.com/#/notes/${noteId}`
+              };
 
-               // Extract enriched metadata (all wrapped in try/catch so main extraction always succeeds)
-               try {
-                 this.extractEnrichedMetadata(sapNote, detail);
-               } catch (enrichError) {
-                 logger.warn(`⚠️ Enriched metadata extraction failed (non-fatal): ${enrichError instanceof Error ? enrichError.message : String(enrichError)}`);
-               }
+              try {
+                this.extractEnrichedMetadata(sapNote, detail);
+              } catch (enrichError) {
+                logger.warn(`⚠️ Enriched metadata extraction failed (non-fatal): ${enrichError instanceof Error ? enrichError.message : String(enrichError)}`);
+              }
 
-               return detail;
-             }
+              return detail;
+            }
 
-             // Fallback to generic JSON parsing for other structures
-             return {
-               id: jsonData.SapNote || jsonData.id || noteId,
-               title: jsonData.Title || jsonData.title || jsonData.ShortText || `SAP Note ${noteId}`,
-               summary: jsonData.Summary || jsonData.summary || jsonData.Abstract || jsonData.Description || 'Note content extracted via Playwright',
-               content: jsonData.Content || jsonData.content || jsonData.Text || jsonData.LongText || jsonData.Html || jsonData.Description || 'Raw note data retrieved successfully',
-               language: jsonData.Language || 'EN',
-               releaseDate: jsonData.ReleaseDate || jsonData.CreationDate || 'Unknown',
-               component: jsonData.Component,
-               priority: jsonData.Priority,
-               category: jsonData.Category || jsonData.Type,
-               url: `https://launchpad.support.sap.com/#/notes/${noteId}`
-             };
-           }
+            return {
+              id: jsonData.SapNote || jsonData.id || noteId,
+              title: jsonData.Title || jsonData.title || jsonData.ShortText || `SAP Note ${noteId}`,
+              summary: jsonData.Summary || jsonData.summary || jsonData.Abstract || jsonData.Description || 'Note content extracted via Playwright',
+              content: jsonData.Content || jsonData.content || jsonData.Text || jsonData.LongText || jsonData.Html || jsonData.Description || 'Raw note data retrieved successfully',
+              language: jsonData.Language || 'EN',
+              releaseDate: jsonData.ReleaseDate || jsonData.CreationDate || 'Unknown',
+              component: jsonData.Component,
+              priority: jsonData.Priority,
+              category: jsonData.Category || jsonData.Type,
+              url: `https://launchpad.support.sap.com/#/notes/${noteId}`
+            };
+          }
         }
       } catch (jsonError) {
         const errorMessage = jsonError instanceof Error ? jsonError.message : String(jsonError);
         logger.debug(`JSON parsing failed: ${errorMessage}`);
       }
 
-      // Check if the entire page content is JSON
       try {
         const jsonMatch = content.match(/<body[^>]*>(.*?)<\/body>/s);
-                 if (jsonMatch && jsonMatch[1]) {
-           const bodyContent = jsonMatch[1].trim();
-           if (bodyContent.startsWith('{') && bodyContent.endsWith('}')) {
-             const jsonData = JSON.parse(bodyContent);
-             logger.info(`🎉 Found JSON in HTML body!`);
+        if (jsonMatch && jsonMatch[1]) {
+          const bodyContent = jsonMatch[1].trim();
+          if (bodyContent.startsWith('{') && bodyContent.endsWith('}')) {
+            const jsonData = JSON.parse(bodyContent);
+            logger.info(`🎉 Found JSON in HTML body!`);
 
-             // Handle the actual SAP Note API response structure
-             if (jsonData.Response && jsonData.Response.SAPNote) {
-               const sapNote = jsonData.Response.SAPNote;
-               const header = sapNote.Header || {};
+            if (jsonData.Response && jsonData.Response.SAPNote) {
+              const sapNote = jsonData.Response.SAPNote;
+              const header = sapNote.Header || {};
 
-               logger.info(`📄 Extracting SAP Note data from HTML body API response`);
+              const detail: SapNoteDetail = {
+                id: header.Number?.value || noteId,
+                title: sapNote.Title?.value || `SAP Note ${noteId}`,
+                summary: header.Type?.value || 'SAP Knowledge Base Article',
+                content: sapNote.LongText?.value || 'No content available',
+                language: header.Language?.value || 'EN',
+                releaseDate: header.ReleasedOn?.value || 'Unknown',
+                component: header.SAPComponentKey?.value,
+                componentText: header.SAPComponentKeyText?.value,
+                priority: header.Priority?.value,
+                category: header.Category?.value,
+                version: header.Version?.value != null ? String(header.Version.value) : undefined,
+                status: header.Status?.value,
+                url: `https://launchpad.support.sap.com/#/notes/${noteId}`
+              };
 
-               const detail: SapNoteDetail = {
-                 id: header.Number?.value || noteId,
-                 title: sapNote.Title?.value || `SAP Note ${noteId}`,
-                 summary: header.Type?.value || 'SAP Knowledge Base Article',
-                 content: sapNote.LongText?.value || 'No content available',
-                 language: header.Language?.value || 'EN',
-                 releaseDate: header.ReleasedOn?.value || 'Unknown',
-                 component: header.SAPComponentKey?.value,
-                 componentText: header.SAPComponentKeyText?.value,
-                 priority: header.Priority?.value,
-                 category: header.Category?.value,
-                 version: header.Version?.value != null ? String(header.Version.value) : undefined,
-                 status: header.Status?.value,
-                 url: `https://launchpad.support.sap.com/#/notes/${noteId}`
-               };
+              try {
+                this.extractEnrichedMetadata(sapNote, detail);
+              } catch (enrichError) {
+                logger.warn(`⚠️ Enriched metadata extraction failed (non-fatal): ${enrichError instanceof Error ? enrichError.message : String(enrichError)}`);
+              }
 
-               try {
-                 this.extractEnrichedMetadata(sapNote, detail);
-               } catch (enrichError) {
-                 logger.warn(`⚠️ Enriched metadata extraction failed (non-fatal): ${enrichError instanceof Error ? enrichError.message : String(enrichError)}`);
-               }
+              return detail;
+            }
 
-               return detail;
-             }
-
-             // Fallback to generic JSON parsing
-             return {
-               id: jsonData.SapNote || jsonData.id || noteId,
-               title: jsonData.Title || jsonData.title || jsonData.ShortText || `SAP Note ${noteId}`,
-               summary: jsonData.Summary || jsonData.summary || jsonData.Abstract || 'Note extracted via Playwright',
-               content: jsonData.Content || jsonData.content || jsonData.Text || jsonData.LongText || jsonData.Html || 'Note content available',
-               language: jsonData.Language || 'EN',
-               releaseDate: jsonData.ReleaseDate || jsonData.CreationDate || 'Unknown',
-               component: jsonData.Component,
-               priority: jsonData.Priority,
-               category: jsonData.Category || jsonData.Type,
-               url: `https://launchpad.support.sap.com/#/notes/${noteId}`
-             };
-           }
-         }
+            return {
+              id: jsonData.SapNote || jsonData.id || noteId,
+              title: jsonData.Title || jsonData.title || jsonData.ShortText || `SAP Note ${noteId}`,
+              summary: jsonData.Summary || jsonData.summary || jsonData.Abstract || 'Note extracted via Playwright',
+              content: jsonData.Content || jsonData.content || jsonData.Text || jsonData.LongText || jsonData.Html || 'Note content available',
+              language: jsonData.Language || 'EN',
+              releaseDate: jsonData.ReleaseDate || jsonData.CreationDate || 'Unknown',
+              component: jsonData.Component,
+              priority: jsonData.Priority,
+              category: jsonData.Category || jsonData.Type,
+              url: `https://launchpad.support.sap.com/#/notes/${noteId}`
+            };
+          }
+        }
       } catch (htmlJsonError) {
         logger.debug('No JSON found in HTML body either');
       }
 
-      // If no JSON, try to extract data from HTML
       logger.debug(`📄 Parsing HTML content (${content.length} characters)`);
       
-      // Look for note data in various places in the HTML
       const noteData = await page.evaluate((noteId) => {
-        // Try to find note information in the page
-        const result = {
-          id: noteId,
-          title: '',
-          summary: '',
-          content: '',
-          found: false
-        };
+        const result = { id: noteId, title: '', summary: '', content: '', found: false };
 
-        // Look for title in various places
         const titleElement = document.querySelector('h1, h2, .note-title, .title');
-        if (titleElement) {
-          result.title = titleElement.textContent?.trim() || '';
-          result.found = true;
-        }
+        if (titleElement) { result.title = titleElement.textContent?.trim() || ''; result.found = true; }
 
-        // Look for content in various places
         const contentElement = document.querySelector('.note-content, .content, .description, .text');
-        if (contentElement) {
-          result.content = contentElement.textContent?.trim() || '';
-          result.found = true;
-        }
+        if (contentElement) { result.content = contentElement.textContent?.trim() || ''; result.found = true; }
 
-        // Look for summary
         const summaryElement = document.querySelector('.summary, .abstract, .description');
-        if (summaryElement) {
-          result.summary = summaryElement.textContent?.trim() || '';
-          result.found = true;
-        }
+        if (summaryElement) { result.summary = summaryElement.textContent?.trim() || ''; result.found = true; }
 
-        // If we found any content, mark as successful
-        if (result.title || result.content || result.summary) {
-          result.found = true;
-        }
+        if (result.title || result.content || result.summary) { result.found = true; }
 
         return result;
       }, noteId);
 
       if (noteData.found) {
         logger.info(`📄 Extracted note data from HTML via Playwright`);
-        
         return {
           id: noteId,
           title: noteData.title || `SAP Note ${noteId}`,
@@ -1890,7 +1622,6 @@ export class SapNotesApiClient {
         };
       }
 
-      // If we get here, we didn't find useful content
       logger.warn(`⚠️ Playwright loaded page but couldn't extract note content`);
       return null;
 
@@ -1899,21 +1630,16 @@ export class SapNotesApiClient {
       logger.error(`❌ Playwright note extraction failed: ${errorMessage}`);
       throw new Error(`Playwright extraction failed: ${errorMessage}`);
     } finally {
-      // Only close the page, keep the persistent browser alive
       if (page) {
         await page.close().catch(() => {});
       }
     }
   }
 
-  /**
-   * Parse cookies from token string
-   */
   private parseCookiesFromToken(token: string): Array<{name: string, value: string, domain: string, path: string}> {
     const cookies: Array<{name: string, value: string, domain: string, path: string}> = [];
     
     try {
-      // Split by semicolon and parse each cookie
       const cookiePairs = token.split(';');
       
       for (const pair of cookiePairs) {
@@ -1923,21 +1649,13 @@ export class SapNotesApiClient {
           const name = trimmed.substring(0, equalIndex).trim();
           let value = trimmed.substring(equalIndex + 1).trim();
           
-          // Remove surrounding quotes if present
           if (value.startsWith('"') && value.endsWith('"')) {
             value = value.slice(1, -1);
           }
           
-          // Only add valid cookies with proper names and values
           if (name && value && name.length > 0 && value.length > 0) {
-            // Skip cookie attributes like Path, Domain, Secure, HttpOnly
             if (!['path', 'domain', 'secure', 'httponly', 'samesite', 'max-age', 'expires'].includes(name.toLowerCase())) {
-              cookies.push({
-                name: name,
-                value: value,
-                domain: '.sap.com',
-                path: '/'
-              });
+              cookies.push({ name, value, domain: '.sap.com', path: '/' });
             }
           }
         }
@@ -1945,7 +1663,6 @@ export class SapNotesApiClient {
       
       logger.debug(`🍪 Parsed ${cookies.length} cookies from token`);
       
-      // Log first few cookie names for debugging
       if (cookies.length > 0) {
         const cookieNames = cookies.slice(0, 5).map(c => c.name).join(', ');
         logger.debug(`🍪 Cookie names: ${cookieNames}${cookies.length > 5 ? '...' : ''}`);
@@ -1958,21 +1675,11 @@ export class SapNotesApiClient {
     return cookies;
   }
 
-  /**
-   * Get cached cookies from the token cache file
-   */
-  /**
-   * Get cookies filtered for a specific domain
-   * Handles domain matching: .sap.com matches me.sap.com, me.sap.com matches exactly
-   */
   private async getCookiesForDomain(targetDomain: string): Promise<Array<{name: string, value: string, domain: string, path: string}>> {
     const allCookies = await this.getCachedCookies();
     return allCookies.filter(c => {
       const cookieDomain = c.domain.startsWith('.') ? c.domain : `.${c.domain}`;
       const target = `.${targetDomain}`;
-      // Cookie domain .sap.com matches me.sap.com
-      // Cookie domain .me.sap.com matches me.sap.com
-      // Cookie domain me.sap.com matches me.sap.com
       return target.endsWith(cookieDomain) || cookieDomain === target;
     });
   }
@@ -1980,10 +1687,8 @@ export class SapNotesApiClient {
   private async getCachedCookies(): Promise<Array<{name: string, value: string, domain: string, path: string, expires?: number, secure?: boolean, httpOnly?: boolean, sameSite?: 'Strict' | 'Lax' | 'None'}>> {
     try {
       const { readFileSync, existsSync } = await import('fs');
-      const { dirname, join } = await import('path');
-      const { fileURLToPath } = await import('url');
+      const { join } = await import('path');
       
-      // Get the project root directory
       const currentDir = process.cwd();
       const tokenCacheFile = join(currentDir, 'token-cache.json');
       
@@ -2007,4 +1712,4 @@ export class SapNotesApiClient {
       return [];
     }
   }
-} 
+}
