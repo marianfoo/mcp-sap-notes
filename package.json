@@ -1,11 +1,20 @@
 {
   "name": "sap-note-search-mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "MCP server for searching SAP Notes/KB articles using SAP Passport authentication and Playwright automation",
   "main": "dist/mcp-server.js",
   "type": "module",
+  "files": [
+    "dist",
+    "README.md",
+    "env.example",
+    "LICENSE",
+    "package.json"
+  ],
   "scripts": {
     "build": "tsc",
+    "prepack": "npm run clean && npm run build",
+    "prepublishOnly": "npm run build",
     "dev": "tsx watch src/mcp-server.ts",
     "dev:http": "tsx watch src/http-mcp-server.ts",
     "serve": "node dist/mcp-server.js",
