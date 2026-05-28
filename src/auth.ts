@@ -1,4 +1,4 @@
-import { SapWebAuthenticator, type AuthConfig, type BrowserType, type ServiceProfile } from '@marianzeis/sap-mcp-auth';
+import { SapWebAuthenticator, type AuthConfig, type BrowserType, type ServiceProfile } from '@marianfoo/sap-mcp-auth';
 import type { ServerConfig } from './types.js';
 import { logger } from './logger.js';
 
