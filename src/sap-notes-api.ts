@@ -1,6 +1,7 @@
 import type { ServerConfig } from './types.js';
 import { logger } from './logger.js';
-import { chromium, type Browser, type Page } from 'playwright';
+import { existsSync } from 'fs';
+import { chromium, type Browser, type BrowserContextOptions, type Page } from 'playwright';
 
 export interface SapNoteResult {
   id: string;
@@ -1606,6 +1607,106 @@ export class SapNotesApiClient {
     } catch (e) { logger.debug(`DownloadURL extraction skipped: ${e}`); }
   }
 
+  private sanitizeCookiesForStorageState(cookies: any[]): Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires: number;
+    httpOnly: boolean;
+    secure: boolean;
+    sameSite: 'Strict' | 'Lax' | 'None';
+  }> {
+    const validSameSite = new Set(['Strict', 'Lax', 'None']);
+    const controlChars = /[\n\r\0]/;
+
+    return cookies
+      .filter(cookie => (
+        cookie &&
+        typeof cookie.name === 'string' &&
+        typeof cookie.value === 'string' &&
+        typeof cookie.domain === 'string' &&
+        cookie.domain.length > 0 &&
+        !controlChars.test(cookie.name) &&
+        !controlChars.test(cookie.value)
+      ))
+      .map(cookie => {
+        const sanitized: any = {
+          name: cookie.name,
+          value: cookie.value,
+          domain: cookie.domain,
+          path: cookie.path || '/',
+          expires: -1,
+          httpOnly: false,
+          secure: false,
+          sameSite: 'Lax'
+        };
+
+        const expires = typeof cookie.expires === 'string' ? Number.parseFloat(cookie.expires) : cookie.expires;
+        if (typeof expires === 'number' && Number.isFinite(expires)) {
+          sanitized.expires = expires;
+        }
+
+        if (typeof cookie.httpOnly === 'boolean') sanitized.httpOnly = cookie.httpOnly;
+        if (typeof cookie.secure === 'boolean') sanitized.secure = cookie.secure;
+
+        const sameSite = typeof cookie.sameSite === 'string'
+          ? cookie.sameSite.charAt(0).toUpperCase() + cookie.sameSite.slice(1).toLowerCase()
+          : undefined;
+        if (sameSite && validSameSite.has(sameSite)) {
+          sanitized.sameSite = sameSite;
+          if (sameSite === 'None') {
+            sanitized.secure = true;
+          }
+        }
+
+        return sanitized;
+      });
+  }
+
+  private async buildStorageStateFromTokenCache(token: string): Promise<BrowserContextOptions['storageState'] | undefined> {
+    const cachedCookies = await this.getCachedCookies();
+    const sourceCookies = cachedCookies.length > 0 ? cachedCookies : this.parseCookiesFromToken(token);
+    const cookies = this.sanitizeCookiesForStorageState(sourceCookies);
+
+    if (cookies.length === 0) {
+      return undefined;
+    }
+
+    logger.debug(`Prepared ${cookies.length} cookies for browser storage state`);
+    return { cookies, origins: [] };
+  }
+
+  private isAuthenticationResponse(url: string, title: string, content: string): boolean {
+    const lowerUrl = url.toLowerCase();
+    const lowerTitle = title.toLowerCase();
+    const lowerContent = content.slice(0, 5000).toLowerCase();
+
+    return (
+      lowerUrl.includes('accounts.sap.com') ||
+      lowerUrl.includes('/login') ||
+      lowerUrl.includes('saml') ||
+      lowerUrl.includes('authentication.') ||
+      lowerTitle.includes('sign in') ||
+      lowerTitle.includes('login') ||
+      lowerContent.includes('sign in') && lowerContent.includes('accounts.sap.com')
+    );
+  }
+
+  private async savePersistentStorageState(): Promise<void> {
+    if (!this.browserContext || !this.config.ssoStorageStateFile) return;
+
+    try {
+      const { dirname } = await import('path');
+      const { mkdirSync } = await import('fs');
+      mkdirSync(dirname(this.config.ssoStorageStateFile), { recursive: true });
+      await this.browserContext.storageState({ path: this.config.ssoStorageStateFile });
+      logger.debug(`Saved updated SAP SSO browser state to ${this.config.ssoStorageStateFile}`);
+    } catch (error) {
+      logger.warn(`Failed to save SAP SSO browser state: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   /**
    * Ensure the persistent browser is available and has cookies loaded.
    * Shared by Coveo token Playwright fallback and note retrieval.
@@ -1650,20 +1751,30 @@ export class SapNotesApiClient {
       ]
     });
 
-    this.browserContext = await this.browser.newContext({
+    const contextOptions: BrowserContextOptions = {
       userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36'
-    });
+    };
 
-    // Add cookies from cached authentication
-    const cookies = await this.getCachedCookies();
-    if (cookies.length > 0) {
-      await this.browserContext.addCookies(cookies);
-      logger.debug(`Added ${cookies.length} cached cookies to persistent browser`);
+    if (this.config.ssoStorageStateFile && existsSync(this.config.ssoStorageStateFile)) {
+      contextOptions.storageState = this.config.ssoStorageStateFile;
+      logger.info(`Loading shared SAP SSO browser state from ${this.config.ssoStorageStateFile}`);
     } else {
-      const parsedCookies = this.parseCookiesFromToken(token);
-      if (parsedCookies.length > 0) {
-        await this.browserContext.addCookies(parsedCookies);
+      const storageState = await this.buildStorageStateFromTokenCache(token);
+      if (storageState) {
+        contextOptions.storageState = storageState;
       }
+    }
+
+    try {
+      this.browserContext = await this.browser.newContext(contextOptions);
+    } catch (error) {
+      if (!contextOptions.storageState) {
+        throw error;
+      }
+
+      logger.warn(`Failed to create browser context with saved SAP state, retrying without it: ${error instanceof Error ? error.message : String(error)}`);
+      delete contextOptions.storageState;
+      this.browserContext = await this.browser.newContext(contextOptions);
     }
 
     this.browserLastUsed = Date.now();
@@ -1705,6 +1816,10 @@ export class SapNotesApiClient {
       // Log first few lines of content for debugging
       const contentPreview = content.substring(0, 500);
       logger.debug(`📄 Content preview: ${contentPreview}`);
+
+      if (this.isAuthenticationResponse(currentUrl, pageTitle, content)) {
+        throw new Error('SESSION_EXPIRED: SAP returned the sign-in page instead of note content');
+      }
       
       // Check if page contains JSON data in body text
       try {
@@ -1903,6 +2018,7 @@ export class SapNotesApiClient {
       if (page) {
         await page.close().catch(() => {});
       }
+      await this.savePersistentStorageState();
     }
   }
 
@@ -1980,12 +2096,7 @@ export class SapNotesApiClient {
   private async getCachedCookies(): Promise<Array<{name: string, value: string, domain: string, path: string, expires?: number, secure?: boolean, httpOnly?: boolean, sameSite?: 'Strict' | 'Lax' | 'None'}>> {
     try {
       const { readFileSync, existsSync } = await import('fs');
-      const { dirname, join } = await import('path');
-      const { fileURLToPath } = await import('url');
-      
-      // Get the project root directory
-      const currentDir = process.cwd();
-      const tokenCacheFile = join(currentDir, 'token-cache.json');
+      const tokenCacheFile = this.config.tokenCacheFile;
       
       if (!existsSync(tokenCacheFile)) {
         logger.debug('No token cache file found');
@@ -2007,4 +2118,4 @@ export class SapNotesApiClient {
       return [];
     }
   }
-} 
+}

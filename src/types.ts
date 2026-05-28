@@ -56,6 +56,10 @@ export interface ServerConfig {
   maxJwtAgeH: number;
   headful: boolean;
   logLevel: string;
+  // Cache/state sharing
+  tokenCacheFile: string;
+  ssoStorageStateFile?: string;
+  sapLoginUrl: string;
 }
 
 // Error types
@@ -64,13 +68,6 @@ export interface ApiError {
   message: string;
   code?: string;
   statusCode: number;
-}
-
-// Authentication state
-export interface AuthState {
-  token?: string;
-  expiresAt?: number;
-  isAuthenticated: boolean;
 }
 
 // MCP Server capabilities
@@ -114,4 +111,4 @@ export const SAP_NOTE_GET_SCHEMA = {
   },
   required: ['id'],
   additionalProperties: false
-} as const; 
+} as const;

@@ -37,6 +37,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@marianzeis/sap-mcp-auth": "^0.1.0",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.0",

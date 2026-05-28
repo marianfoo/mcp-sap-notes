@@ -1,11 +1,13 @@
 import { config } from 'dotenv';
 import { fileURLToPath } from 'url';
-import { dirname, join, isAbsolute } from 'path';
+import { dirname, join, isAbsolute, resolve } from 'path';
+import { existsSync } from 'fs';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { ServerConfig } from './types.js';
-import { SapAuthenticator } from './auth.js';
+import type { SapWebAuthenticator } from '@marianzeis/sap-mcp-auth';
+import { createNotesAuthenticator } from './auth.js';
 import { SapNotesApiClient } from './sap-notes-api.js';
 import { logger } from './logger.js';
 import {
@@ -22,8 +24,30 @@ import { parseNoteContent } from './html-utils.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Load environment variables from the project root
-config({ path: join(__dirname, '..', '.env') });
+function resolveOptionalPath(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+
+  let resolvedPath = value;
+  if (resolvedPath.startsWith('~')) {
+    const home = process.env.HOME || process.env.USERPROFILE || '';
+    resolvedPath = join(home, resolvedPath.slice(2));
+  }
+
+  if (!isAbsolute(resolvedPath)) {
+    resolvedPath = join(__dirname, '..', resolvedPath);
+  }
+
+  return resolve(resolvedPath);
+}
+
+// Load environment variables from an explicit file, the launch CWD, then the project root.
+const configuredEnvFile = process.env.ENV_FILE;
+if (configuredEnvFile) {
+  config({ path: resolveOptionalPath(configuredEnvFile) });
+} else {
+  config();
+  config({ path: join(__dirname, '..', '.env') });
+}
 
 /**
  * SAP Note MCP Server using the MCP SDK
@@ -31,13 +55,13 @@ config({ path: join(__dirname, '..', '.env') });
  */
 class SapNoteMcpServer {
   private config: ServerConfig;
-  private authenticator: SapAuthenticator;
+  private authenticator: SapWebAuthenticator;
   private sapNotesClient: SapNotesApiClient;
   private mcpServer: McpServer;
 
   constructor() {
     this.config = this.loadConfig();
-    this.authenticator = new SapAuthenticator(this.config);
+    this.authenticator = createNotesAuthenticator(this.config);
     this.sapNotesClient = new SapNotesApiClient(this.config);
     
     // Create MCP server with official SDK
@@ -57,29 +81,28 @@ class SapNoteMcpServer {
     const authMethod = (process.env.AUTH_METHOD || 'auto') as 'certificate' | 'password' | 'auto';
     const sapUsername = process.env.SAP_USERNAME;
     const sapPassword = process.env.SAP_PASSWORD;
-    const hasCertConfig = !!(process.env.PFX_PATH && process.env.PFX_PASSPHRASE);
+    const pfxPath = resolveOptionalPath(process.env.PFX_PATH) || '';
+    const pfxPassphrase = process.env.PFX_PASSPHRASE || '';
+    const hasCertConfig = !!(pfxPath && pfxPassphrase);
     const hasPasswordConfig = !!(sapUsername && sapPassword);
+    const projectRoot = join(__dirname, '..');
+    const tokenCacheFile = resolveOptionalPath(
+      process.env.SAP_NOTES_TOKEN_CACHE_FILE ||
+      process.env.TOKEN_CACHE_FILE ||
+      join(projectRoot, 'token-cache.json')
+    )!;
+    const ssoStorageStateFile = resolveOptionalPath(
+      process.env.SAP_SSO_STORAGE_STATE ||
+      join(process.env.HOME || process.cwd(), '.sap-mcp', 'sso-storage-state.json')
+    );
+    const hasSsoStorageState = !!(ssoStorageStateFile && existsSync(ssoStorageStateFile));
 
     // Validate that at least one auth method is configured
-    if (!hasCertConfig && !hasPasswordConfig) {
+    if (!hasCertConfig && !hasPasswordConfig && !ssoStorageStateFile) {
       throw new Error(
         'No authentication configured. Set either SAP_USERNAME + SAP_PASSWORD for password auth, ' +
-        'or PFX_PATH + PFX_PASSPHRASE for certificate auth.'
+        'PFX_PATH + PFX_PASSPHRASE for certificate auth, or SAP_SSO_STORAGE_STATE for shared SSO.'
       );
-    }
-
-    // Resolve PFX path (may be empty if using password auth)
-    const projectRoot = join(__dirname, '..');
-    let pfxPath = process.env.PFX_PATH || '';
-
-    if (pfxPath) {
-      if (pfxPath.startsWith('~')) {
-        const home = process.env.HOME || process.env.USERPROFILE || '';
-        pfxPath = join(home, pfxPath.slice(2));
-      }
-      if (!isAbsolute(pfxPath)) {
-        pfxPath = join(projectRoot, pfxPath);
-      }
     }
 
     // Detect Docker/container environment
@@ -95,19 +118,24 @@ class SapNoteMcpServer {
       authMethod,
       hasPassword: hasPasswordConfig,
       hasCertificate: hasCertConfig,
+      hasSsoStorageState,
+      ssoStorageStateFile,
       headful
     });
 
     return {
       pfxPath,
-      pfxPassphrase: process.env.PFX_PASSPHRASE || '',
+      pfxPassphrase,
       sapUsername,
       sapPassword,
       authMethod,
       mfaTimeout: parseInt(process.env.MFA_TIMEOUT || '120000'),
       maxJwtAgeH: parseInt(process.env.MAX_JWT_AGE_H || '12'),
       headful,
-      logLevel: process.env.LOG_LEVEL || 'info'
+      logLevel: process.env.LOG_LEVEL || 'info',
+      tokenCacheFile,
+      ssoStorageStateFile,
+      sapLoginUrl: process.env.SAP_LOGIN_URL || 'https://me.sap.com/home'
     };
   }
 
@@ -116,16 +144,16 @@ class SapNoteMcpServer {
    * If the call fails with a session/auth error, invalidates the token and retries once.
    */
   private async withAuthRetry<T>(fn: (token: string) => Promise<T>): Promise<T> {
-    const token = await this.authenticator.ensureAuthenticated();
+    const { cookieHeader } = await this.authenticator.ensureSession();
     try {
-      return await fn(token);
+      return await fn(cookieHeader);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (msg.includes('SESSION_EXPIRED') || msg.includes('401') || msg.includes('Unauthorized') || msg.includes('session expired')) {
         logger.warn('Session expired, re-authenticating and retrying...');
         this.authenticator.invalidateAuth();
-        const newToken = await this.authenticator.ensureAuthenticated();
-        return await fn(newToken);
+        const { cookieHeader: newCookie } = await this.authenticator.ensureSession();
+        return await fn(newCookie);
       }
       throw error;
     }
@@ -368,10 +396,11 @@ class SapNoteMcpServer {
 }
 
 // Start server if this file is run directly (ESM-safe, cross-platform)
+// process.argv[1] may be a relative path, so resolve it to absolute before comparing
 const isDirectRun = (() => {
   try {
     const thisFile = fileURLToPath(import.meta.url);
-    const invoked = process.argv[1] ? process.argv[1] : '';
+    const invoked = process.argv[1] ? resolve(process.argv[1]) : '';
     return thisFile === invoked;
   } catch {
     return false;
@@ -392,8 +421,6 @@ if (isDirectRun) {
 }
 
 export { SapNoteMcpServer };
-
-
 
 
 
