@@ -25,6 +25,7 @@ console.log(`   Token length: ${token.length} characters\n`);
 // Import and test the SAP Notes API
 const { SapNotesApiClient } = await import('../dist/sap-notes-api.js');
 
+const projectRoot = join(__dirname, '..');
 const config_obj = {
   pfxPath: process.env.PFX_PATH || '',
   pfxPassphrase: process.env.PFX_PASSPHRASE || '',
@@ -34,7 +35,12 @@ const config_obj = {
   mfaTimeout: parseInt(process.env.MFA_TIMEOUT || '120000'),
   maxJwtAgeH: parseInt(process.env.MAX_JWT_AGE_H || '12'),
   headful: process.env.HEADFUL === 'true',
-  logLevel: process.env.LOG_LEVEL || 'info'
+  logLevel: process.env.LOG_LEVEL || 'info',
+  tokenCacheFile: process.env.SAP_NOTES_TOKEN_CACHE_FILE ||
+    process.env.TOKEN_CACHE_FILE ||
+    join(projectRoot, 'token-cache.json'),
+  ssoStorageStateFile: process.env.SAP_SSO_STORAGE_STATE ||
+    join(process.env.HOME || process.cwd(), '.sap-mcp', 'sso-storage-state.json'),
 };
 
 const sapNotesClient = new SapNotesApiClient(config_obj);

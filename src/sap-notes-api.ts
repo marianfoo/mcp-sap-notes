@@ -1756,9 +1756,18 @@ export class SapNotesApiClient {
     };
 
     if (this.config.ssoStorageStateFile && existsSync(this.config.ssoStorageStateFile)) {
-      contextOptions.storageState = this.config.ssoStorageStateFile;
-      logger.info(`Loading shared SAP SSO browser state from ${this.config.ssoStorageStateFile}`);
-    } else {
+      try {
+        const { readFileSync } = await import('fs');
+        const rawState = JSON.parse(readFileSync(this.config.ssoStorageStateFile, 'utf-8'));
+        const sanitizedCookies = this.sanitizeCookiesForStorageState(rawState.cookies || []);
+        contextOptions.storageState = { cookies: sanitizedCookies, origins: rawState.origins || [] };
+        logger.info(`Loading shared SAP SSO browser state from ${this.config.ssoStorageStateFile} (${sanitizedCookies.length} cookies)`);
+      } catch (readErr) {
+        logger.warn(`Failed to read SSO storage state, falling back to token cache: ${readErr instanceof Error ? readErr.message : String(readErr)}`);
+      }
+    }
+
+    if (!contextOptions.storageState) {
       const storageState = await this.buildStorageStateFromTokenCache(token);
       if (storageState) {
         contextOptions.storageState = storageState;
