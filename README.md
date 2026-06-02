@@ -1,5 +1,8 @@
 # SAP Note Search MCP Server
 
+> [!IMPORTANT]
+> **This repository is being archived.** Active development has moved to [`marianfoo/sap-mcp-servers`](https://github.com/marianfoo/sap-mcp-servers), where this server now lives in [`packages/notes`](https://github.com/marianfoo/sap-mcp-servers/tree/main/packages/notes). Please open new issues and pull requests there.
+
 > **MCP server for searching and retrieving SAP Notes / KB articles with full metadata extraction**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -38,8 +41,8 @@ This [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server giv
 ### Installation
 
 ```bash
-git clone https://github.com/marianfoo/mcp-sap-notes
-cd mcp-sap-notes
+git clone https://github.com/marianfoo/sap-mcp-servers
+cd sap-mcp-servers/packages/notes
 npm install
 npm run build
 ```
