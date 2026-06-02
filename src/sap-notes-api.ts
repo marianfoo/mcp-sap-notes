@@ -1635,7 +1635,7 @@ export class SapNotesApiClient {
           name: cookie.name,
           value: cookie.value,
           domain: cookie.domain,
-          path: cookie.path || '/',
+          path: typeof cookie.path === 'string' && cookie.path.length > 0 ? cookie.path : '/',
           expires: -1,
           httpOnly: false,
           secure: false,
@@ -1755,26 +1755,71 @@ export class SapNotesApiClient {
       userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36'
     };
 
+    const storageStateCandidates: Array<{
+      source: string;
+      storageState: Exclude<BrowserContextOptions['storageState'], undefined>;
+    }> = [];
+
     if (this.config.ssoStorageStateFile && existsSync(this.config.ssoStorageStateFile)) {
-      contextOptions.storageState = this.config.ssoStorageStateFile;
-      logger.info(`Loading shared SAP SSO browser state from ${this.config.ssoStorageStateFile}`);
-    } else {
-      const storageState = await this.buildStorageStateFromTokenCache(token);
-      if (storageState) {
-        contextOptions.storageState = storageState;
+      try {
+        const { readFileSync } = await import('fs');
+        const rawState = JSON.parse(readFileSync(this.config.ssoStorageStateFile, 'utf-8'));
+        const rawCookies = Array.isArray(rawState.cookies) ? rawState.cookies : [];
+        const sanitizedCookies = this.sanitizeCookiesForStorageState(rawCookies);
+
+        if (sanitizedCookies.length > 0) {
+          storageStateCandidates.push({
+            source: 'shared SAP SSO browser state',
+            storageState: {
+              cookies: sanitizedCookies,
+              origins: Array.isArray(rawState.origins) ? rawState.origins : []
+            }
+          });
+          logger.info(`Loading shared SAP SSO browser state from ${this.config.ssoStorageStateFile} (${sanitizedCookies.length} cookies)`);
+        } else {
+          logger.warn('Shared SAP SSO browser state has no valid cookies, falling back to token cache');
+        }
+      } catch (readErr) {
+        logger.warn(`Failed to read SSO storage state, falling back to token cache: ${readErr instanceof Error ? readErr.message : String(readErr)}`);
       }
     }
 
-    try {
-      this.browserContext = await this.browser.newContext(contextOptions);
-    } catch (error) {
-      if (!contextOptions.storageState) {
-        throw error;
-      }
+    const tokenCacheStorageState = await this.buildStorageStateFromTokenCache(token);
+    if (tokenCacheStorageState) {
+      storageStateCandidates.push({
+        source: 'token cache',
+        storageState: tokenCacheStorageState
+      });
+    }
 
-      logger.warn(`Failed to create browser context with saved SAP state, retrying without it: ${error instanceof Error ? error.message : String(error)}`);
-      delete contextOptions.storageState;
-      this.browserContext = await this.browser.newContext(contextOptions);
+    let activeStorageState = storageStateCandidates.shift();
+    if (activeStorageState) {
+      contextOptions.storageState = activeStorageState.storageState;
+    }
+
+    while (true) {
+      try {
+        this.browserContext = await this.browser.newContext(contextOptions);
+        break;
+      } catch (error) {
+        if (!contextOptions.storageState) {
+          throw error;
+        }
+
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const nextStorageState = storageStateCandidates.shift();
+
+        if (nextStorageState) {
+          logger.warn(`Failed to create browser context with ${activeStorageState?.source || 'saved SAP state'}, retrying with ${nextStorageState.source}: ${errorMessage}`);
+          contextOptions.storageState = nextStorageState.storageState;
+          activeStorageState = nextStorageState;
+          continue;
+        }
+
+        logger.warn(`Failed to create browser context with ${activeStorageState?.source || 'saved SAP state'}, retrying without it: ${errorMessage}`);
+        delete contextOptions.storageState;
+        activeStorageState = undefined;
+      }
     }
 
     this.browserLastUsed = Date.now();

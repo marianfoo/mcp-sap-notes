@@ -9,10 +9,14 @@ config({ path: join(__dirname, '..', '.env') });
 
 console.log('🧪 Testing SAP Notes API with cached token...\n');
 
+const projectRoot = join(__dirname, '..');
+const tokenCacheFile = process.env.SAP_NOTES_TOKEN_CACHE_FILE ||
+  process.env.TOKEN_CACHE_FILE ||
+  join(projectRoot, 'token-cache.json');
+
 // Read cached token
-const tokenCacheFile = join(__dirname, '..', 'token-cache.json');
 if (!existsSync(tokenCacheFile)) {
-  console.error('❌ No cached token found. Run authentication first with: npm run test-auth');
+  console.error(`❌ No cached token found at ${tokenCacheFile}. Run authentication first with: npm run test-auth`);
   process.exit(1);
 }
 
@@ -34,7 +38,10 @@ const config_obj = {
   mfaTimeout: parseInt(process.env.MFA_TIMEOUT || '120000'),
   maxJwtAgeH: parseInt(process.env.MAX_JWT_AGE_H || '12'),
   headful: process.env.HEADFUL === 'true',
-  logLevel: process.env.LOG_LEVEL || 'info'
+  logLevel: process.env.LOG_LEVEL || 'info',
+  tokenCacheFile,
+  ssoStorageStateFile: process.env.SAP_SSO_STORAGE_STATE ||
+    join(process.env.HOME || process.cwd(), '.sap-mcp', 'sso-storage-state.json'),
 };
 
 const sapNotesClient = new SapNotesApiClient(config_obj);
@@ -95,4 +102,6 @@ try {
   console.error('   - Authentication token expired');
   console.error('   - SAP endpoint access issues');
   console.error('   - Network connectivity problems');
-} 
+} finally {
+  await sapNotesClient.cleanup();
+}

@@ -9,8 +9,8 @@ const __dirname = dirname(__filename);
 // Load environment variables from the project root  
 config({ path: join(__dirname, '..', '.env') });
 
-// Import our authentication class
-import { SapAuthenticator } from '../dist/auth.js';
+// Import our authentication factory
+import { createNotesAuthenticator } from '../dist/auth.js';
 
 async function testAuthentication() {
   console.log('🧪 Testing SAP Authentication...\n');
@@ -110,6 +110,13 @@ async function testAuthentication() {
   const authMethod = process.env.AUTH_METHOD || 'auto';
   console.log(`📋 Auth method: ${authMethod} (password: ${hasPassword}, certificate: ${hasCert})`);
 
+  const projectRoot = join(__dirname, '..');
+  const tokenCacheFile = process.env.SAP_NOTES_TOKEN_CACHE_FILE ||
+    process.env.TOKEN_CACHE_FILE ||
+    join(projectRoot, 'token-cache.json');
+  const ssoStorageStateFile = process.env.SAP_SSO_STORAGE_STATE ||
+    join(process.env.HOME || process.cwd(), '.sap-mcp', 'sso-storage-state.json');
+
   const config = {
     pfxPath: process.env.PFX_PATH || '',
     pfxPassphrase: process.env.PFX_PASSPHRASE || '',
@@ -119,7 +126,9 @@ async function testAuthentication() {
     mfaTimeout: parseInt(process.env.MFA_TIMEOUT || '120000'),
     maxJwtAgeH: parseInt(process.env.MAX_JWT_AGE_H || '12'),
     headful: process.env.HEADFUL === 'true',
-    logLevel: process.env.LOG_LEVEL || 'info'
+    logLevel: process.env.LOG_LEVEL || 'info',
+    tokenCacheFile,
+    ssoStorageStateFile,
   };
 
   console.log('📋 Configuration:');
@@ -129,6 +138,8 @@ async function testAuthentication() {
   console.log(`   Max JWT Age: ${config.maxJwtAgeH}h`);
   console.log(`   Headful Mode: ${config.headful}`);
   console.log(`   MFA Timeout: ${config.mfaTimeout}ms`);
+  console.log(`   Token Cache: ${config.tokenCacheFile}`);
+  console.log(`   SSO Storage State: ${config.ssoStorageStateFile}`);
   console.log('');
 
   // Certificate validation (only if using certificate auth)
@@ -152,31 +163,33 @@ async function testAuthentication() {
     console.log('');
   }
 
-  const authenticator = new SapAuthenticator(config);
+  const authenticator = createNotesAuthenticator(config);
 
   try {
     console.log('🔐 Starting authentication test...');
     console.log('');
     
     // Attempt authentication
-    const token = await authenticator.ensureAuthenticated();
-    
+    const session = await authenticator.ensureSession();
+
     console.log('');
     console.log('🎉 Authentication successful!');
-    console.log(`   Token length: ${token.length} characters`);
-    console.log(`   Token preview: ${token.substring(0, 50)}...`);
+    console.log(`   Auth method: ${session.authMethod}`);
+    console.log(`   Cookie header length: ${session.cookieHeader.length} characters`);
+    console.log(`   Cookie header preview: ${session.cookieHeader.substring(0, 50)}...`);
+    console.log(`   Expires at: ${new Date(session.expiresAt).toISOString()}`);
     console.log('');
-    
-    // Test if we can reuse the cached token
-    console.log('🔄 Testing token cache...');
+
+    // Test if we can reuse the cached session
+    console.log('🔄 Testing session cache...');
     const startTime = Date.now();
-    const cachedToken = await authenticator.ensureAuthenticated();
+    const cachedSession = await authenticator.ensureSession();
     const duration = Date.now() - startTime;
-    
-    if (token === cachedToken && duration < 1000) {
-      console.log(`✅ Token cache working (${duration}ms)`);
+
+    if (session.cookieHeader === cachedSession.cookieHeader && duration < 1000) {
+      console.log(`✅ Session cache working (${duration}ms)`);
     } else {
-      console.log(`⚠️ Token cache may not be working properly`);
+      console.log(`⚠️ Session cache may not be working properly`);
     }
     
     console.log('');

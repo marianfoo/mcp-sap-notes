@@ -6,8 +6,15 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 config({ path: join(__dirname, '..', '.env') });
 
-import { SapAuthenticator } from '../dist/auth.js';
+import { createNotesAuthenticator } from '../dist/auth.js';
 import { SapNotesApiClient } from '../dist/sap-notes-api.js';
+
+const projectRoot = join(__dirname, '..');
+const tokenCacheFile = process.env.SAP_NOTES_TOKEN_CACHE_FILE ||
+  process.env.TOKEN_CACHE_FILE ||
+  join(projectRoot, 'token-cache.json');
+const ssoStorageStateFile = process.env.SAP_SSO_STORAGE_STATE ||
+  join(process.env.HOME || process.cwd(), '.sap-mcp', 'sso-storage-state.json');
 
 const serverConfig = {
   pfxPath: process.env.PFX_PATH || '',
@@ -18,10 +25,13 @@ const serverConfig = {
   mfaTimeout: parseInt(process.env.MFA_TIMEOUT || '120000'),
   maxJwtAgeH: parseInt(process.env.MAX_JWT_AGE_H || '12'),
   headful: process.env.HEADFUL === 'true',
-  logLevel: process.env.LOG_LEVEL || 'debug'
+  logLevel: process.env.LOG_LEVEL || 'debug',
+  tokenCacheFile,
+  ssoStorageStateFile,
+  sapLoginUrl: process.env.SAP_LOGIN_URL || 'https://me.sap.com/home'
 };
 
-const authenticator = new SapAuthenticator(serverConfig);
+const authenticator = createNotesAuthenticator(serverConfig);
 const apiClient = new SapNotesApiClient(serverConfig);
 
 let passed = 0;
@@ -43,16 +53,18 @@ async function run() {
   console.log('=== Full Flow Test ===\n');
 
   // Step 1: Authenticate
+  let session;
   let token;
   console.log('1. Authentication');
   await test('authenticate with username/password', async () => {
-    token = await authenticator.ensureAuthenticated();
+    session = await authenticator.ensureSession();
+    token = session.cookieHeader;
     if (!token || token.length < 100) throw new Error(`Token too short: ${token?.length}`);
   });
 
-  await test('cached token reuse', async () => {
-    const t2 = await authenticator.ensureAuthenticated();
-    if (t2 !== token) throw new Error('Cache returned different token');
+  await test('cached session reuse', async () => {
+    const cachedSession = await authenticator.ensureSession();
+    if (cachedSession.cookieHeader !== token) throw new Error('Cache returned different cookie header');
   });
 
   if (!token) {
