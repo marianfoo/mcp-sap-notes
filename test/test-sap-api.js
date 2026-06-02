@@ -9,10 +9,14 @@ config({ path: join(__dirname, '..', '.env') });
 
 console.log('🧪 Testing SAP Notes API with cached token...\n');
 
+const projectRoot = join(__dirname, '..');
+const tokenCacheFile = process.env.SAP_NOTES_TOKEN_CACHE_FILE ||
+  process.env.TOKEN_CACHE_FILE ||
+  join(projectRoot, 'token-cache.json');
+
 // Read cached token
-const tokenCacheFile = join(__dirname, '..', 'token-cache.json');
 if (!existsSync(tokenCacheFile)) {
-  console.error('❌ No cached token found. Run authentication first with: npm run test-auth');
+  console.error(`❌ No cached token found at ${tokenCacheFile}. Run authentication first with: npm run test-auth`);
   process.exit(1);
 }
 
@@ -25,7 +29,6 @@ console.log(`   Token length: ${token.length} characters\n`);
 // Import and test the SAP Notes API
 const { SapNotesApiClient } = await import('../dist/sap-notes-api.js');
 
-const projectRoot = join(__dirname, '..');
 const config_obj = {
   pfxPath: process.env.PFX_PATH || '',
   pfxPassphrase: process.env.PFX_PASSPHRASE || '',
@@ -36,9 +39,7 @@ const config_obj = {
   maxJwtAgeH: parseInt(process.env.MAX_JWT_AGE_H || '12'),
   headful: process.env.HEADFUL === 'true',
   logLevel: process.env.LOG_LEVEL || 'info',
-  tokenCacheFile: process.env.SAP_NOTES_TOKEN_CACHE_FILE ||
-    process.env.TOKEN_CACHE_FILE ||
-    join(projectRoot, 'token-cache.json'),
+  tokenCacheFile,
   ssoStorageStateFile: process.env.SAP_SSO_STORAGE_STATE ||
     join(process.env.HOME || process.cwd(), '.sap-mcp', 'sso-storage-state.json'),
 };
@@ -101,4 +102,6 @@ try {
   console.error('   - Authentication token expired');
   console.error('   - SAP endpoint access issues');
   console.error('   - Network connectivity problems');
-} 
+} finally {
+  await sapNotesClient.cleanup();
+}
